@@ -8,15 +8,15 @@ This repository implements a deep learning framework for **6D object pose estima
 ## Project Structure
 
 6DPOSE/
-│
-├── data/ # Datasets and preprocessed inputs
-├── model.py/ # Network architectures
-├── utils.py/ # Helper scripts and visualization tools
-├── datasets.py/ # Pytorch dataset and dataloader objects
-├── train.py # Training script
-├── evaluate.py # Evaluation script
-├── inference.py # Inference and visualization
-└── pre_trained_models/ # Containing checkpoints and pretraind models
+
+ data/ # Datasets and preprocessed inputs
+ model.py/ # Network architectures
+ utils.py/ # Helper scripts and visualization tools
+ datasets.py/ # Pytorch dataset and dataloader objects
+ train.py # Training script
+ evaluate.py # Evaluation script
+ inference.py # Inference and visualization
+ pre_trained_models/ # Containing checkpoints and pretraind models
 
 ## Installation
 ```bash
