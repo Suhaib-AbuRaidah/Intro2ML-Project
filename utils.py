@@ -78,7 +78,7 @@ def draw_pose_on_rgb(rgb, poses, K, axis_length=0.05, colors=None):
 import matplotlib.pyplot as plt
 import numpy as np
 
-def plot_pose_errors(rotation_errors, translation_errors, save_path=None):
+def plot_pose_errors(rotation_errors, translation_errors):
     """
     Plot per-instance rotation and translation errors.
 
@@ -89,7 +89,7 @@ def plot_pose_errors(rotation_errors, translation_errors, save_path=None):
     """
     idx = np.arange(len(rotation_errors))
 
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(16, 10))
 
     # Rotation error plot
     plt.subplot(1, 2, 1)
@@ -111,14 +111,14 @@ def plot_pose_errors(rotation_errors, translation_errors, save_path=None):
 
     plt.tight_layout()
 
-    if save_path:
-        plt.savefig(save_path, dpi=300)
+
+    plt.savefig("error.svg", dpi=300)
     plt.show()
 
 
 def plot_histogram(rot_errs, trans_errs, acc, rot_threshold):
     # === Visualization ===
-    plt.figure(figsize=(14, 4))
+    plt.figure(figsize=(16, 10))
 
     # Histogram of rotation error
     plt.subplot(1, 3, 1)
@@ -149,10 +149,10 @@ def plot_histogram(rot_errs, trans_errs, acc, rot_threshold):
     plt.grid(True, linestyle='--', alpha=0.4)
 
     plt.suptitle(f"Pose Evaluation\nAccuracy={acc:.2f}%, "
-                 f"Median Rot={np.median(rot_errs):.2f}°, "
-                 f"Median Trans={np.median(trans_errs)*100:.2f}cm")
+                 f"Median Rot Error={np.median(rot_errs):.2f}°, "
+                 f"Median Trans Error={np.median(trans_errs)*100:.2f}cm")
 
     plt.tight_layout()
     plt.subplots_adjust(top=0.8)
-
+    plt.savefig("pose_evaluation.svg", dpi=300)
     plt.show()

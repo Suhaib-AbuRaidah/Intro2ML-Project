@@ -20,7 +20,7 @@ def main():
     p.add_argument("--num_objects", type=int, default=4)
     args = p.parse_args()
 
-    os.makedirs(args.out, exist_ok=True)
+    # os.makedirs(args.out, exist_ok=True)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     ds = TransCG_D435_Dataset(args.data, object_ids=None if args.num_objects is None else [0,32,42,47][:args.num_objects], use_depth=args.use_depth)
@@ -31,7 +31,7 @@ def main():
     model.eval()
 
     with torch.no_grad():
-        sample = ds[212]
+        sample = ds[96]
         # collate_fn returned list of samples; handle arbitrary batch size
         rgb = sample["rgb"].unsqueeze(0).to(device)           # (1,3,H,W)
         depth = None
@@ -60,8 +60,8 @@ def main():
         print(f"Saved {len(rot_pred)} poses for {base}")
         k= np.load("/home/suhaib/6DPOSE/data/transcg-info/transcg/camera_intrinsics/1-camIntrinsics-D435.npy")
         img = draw_pose_on_rgb(sample["rgb"].numpy().transpose(1,2,0), poses, k)
-
-        cv2.imshow("img", img)
+        cv2.imwrite("./img2.png",img)
+        cv2.imshow("img2", img)
         print("Press (q) to quit")
         if cv2.waitKey(0)==ord('q'):
             cv2.destroyAllWindows()

@@ -16,8 +16,8 @@ def angular_error(q1, q2):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", default="/home/suhaib/6DPOSE/data/transcg-data-1/transcg")
-    parser.add_argument("--model", default="pose_net.pth")
-    parser.add_argument("--use_depth", action="store_true")
+    parser.add_argument("--model", default="pre_trained_models/2025-10-16 15:17:10/chkpt_best_model_val.pth")
+    parser.add_argument("--use_depth", default=True, action="store_true")
     parser.add_argument("--num_objects", type=int, default=4)
     parser.add_argument("--rot_thresh", type=float, default=5.0)
     parser.add_argument("--trans_thresh", type=float, default=0.05)
