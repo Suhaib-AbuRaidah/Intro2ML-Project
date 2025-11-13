@@ -2,7 +2,6 @@ data/
 __pycache__/
 runs/
 proposal data/
-net_vis.py
 pre_trained_models/
 papers/
-vis.py
+vis/
