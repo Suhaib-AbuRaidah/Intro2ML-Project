@@ -2,7 +2,7 @@ data/
 __pycache__/
 proposal/runs/
 proposal/proposal data/
-*trained*/
-pretrained_models/
+**/pretrained_models/
+**/pre_trained_models/
 papers/
 vis/
