@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from stage2.feature_extractor import FeatureExtractor
+from trans_pose.stage2.feature_extractor import FeatureExtractor
 
 class PointSegHead(nn.Module):
     def __init__(self, in_dim, num_classes):
@@ -51,6 +51,7 @@ class TransPoseNetwork(nn.Module):
         self.offset_head = OffsetHead(feature_outdim, num_keypoints)
 
     def forward(self, data):
+        
         # points: (B, N, 3) or (B, N, feat)
         features = self.features(data)  # (B, N, F)
         seg_logits = self.seg_head(features)  # (B, N, C)

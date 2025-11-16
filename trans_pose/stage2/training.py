@@ -3,61 +3,113 @@ import torch.nn as nn
 import torch.nn.functional as F
 import tqdm
 
-from stage2.dataset_stage2 import Stage2_dataset
-from stage2.network import TransPoseNetwork
-from stage2.utilis import votes_from_offsets
+import sys
+sys.path.append("/home/suhaib/ML_Project")
 
+from trans_pose.stage2.dataset_stage2 import Stage2Dataset
+from trans_pose.stage2.network import TransPoseNetwork
+from trans_pose.stage2.utilis import votes_from_offsets, mean_shift_clustering, rigid_transform_3D
 
-def train_epoch(model, dataloader, num_objects, device):
-    for epoch in tqdm.tqdm(range(50)):
-        for step, data in enumerate(dataloader, start=1):
+def train_epoch(model, dataloader, device, optimizer, epochs=10):
+
+    for epoch in range(epochs):
+
+        for step, data in enumerate(dataloader):
+
+            poses_list = data['poses']        # list of length B, each is dict: obj_id → (4,4)
+            kpts_list  = data['keypoints']    # list of length B, each is dict: obj_id → (K,3)
+
             seg_logits, offsets = model(data)
-            seg_probs = F.softmax(seg_logits, dim=-1)
-            seg_labels = seg_probs.argmax(dim=-1)  # (B,N) semantic labels
-
+            seg_labels = seg_logits.argmax(dim=-1)  # (B,N)
             votes = votes_from_offsets(data, offsets)  # (B,N,K,3)
 
-            # For each object class in the scene, we will cluster votes for points predicted as that class.
-            # For this example, we assume single foreground class id = 1 (adapt as needed).
             B, N, K, _ = votes.shape
-            centers = torch.zeros((B, K, 3), device=device)
+
+            loss_total = 0.0
+
+            # ---------------- process each sample independently ----------------
             for b in range(B):
-                # mask points that belong to object(s) of interest (semantic label >0)
-                mask = (seg_labels[b] > 0)  # boolean (N,)
-                if mask.sum() == 0:
-                    # fallback: use all points
-                    mask = torch.ones(N, dtype=torch.bool, device=device)
-                votes_b = votes[b]  # (N,K,3)
-                mask_f = mask.to(device)
-                votes_masked = votes_b[mask_f]  # (M,K,3)
-                if votes_masked.shape[0] == 0:
-                    centers[b] = votes_b.mean(dim=0)
-                else:
-                    # run mean-shift on votes_masked (convert to shape (1, M, K, 3))
-                    v = votes_masked.unsqueeze(0)  # (1,M,K,3)
-                    centers_b = mean_shift_clustering(v, mask=None, bandwidth=0.05, num_iters=15)
-                    centers[b] = centers_b[0]
+
+                poses_gt = poses_list[b]      # dict: obj_id → (4,4)
+                kpts_gt  = kpts_list[b]       # dict: obj_id → (K,3)
+
+                # object ids for THIS sample only
+                object_ids = sorted([int(obj_id) for obj_id in poses_gt.keys()])
+                O = len(object_ids)
+
+                # assign local classes: 0..O-1
+                class_map = { real_id: idx for idx, real_id in enumerate(object_ids) }
+
+                # predicted segmentation for this sample
+                seg_b = seg_labels[b]     # (N,)
+                votes_b = votes[b]        # (N,K,3)
+
+                centers_b = torch.zeros((O, K, 3), device=device)
+
+                # ---------------- mean shift per object ----------------
+                for local_idx, real_obj_id in enumerate(object_ids):
+
+                    cls = class_map[real_obj_id]
+                    mask = (seg_b == cls)        # (N,)
+                    votes_obj = votes_b[mask]    # (M,K,3)
+
+                    if votes_obj.shape[0] == 0:
+                        centers_b[local_idx] = votes_b.mean(dim=0)
+                    else:
+                        inp = votes_obj.unsqueeze(0)     # (1,M,K,3)
+                        ctr = mean_shift_clustering(inp, None, 0.05, 15)
+                        centers_b[local_idx] = ctr[0]
+
+                # ---------------- pose loss per object ----------------
+                for local_idx, real_obj_id in enumerate(object_ids):
+
+                    pred_kp = centers_b[local_idx]   # (K,3)
+
+                    target_kp = torch.tensor(
+                        kpts_gt[str(real_obj_id)], device=device
+                    ).float()                         # (K,3)
+
+                    pred_pose = rigid_transform_3D(pred_kp, target_kp)
+
+                    target_pose = torch.tensor(
+                        poses_gt[str(real_obj_id)], device=device
+                    ).float()                         # (4,4)
+
+                    loss_total += F.mse_loss(pred_pose, target_pose)
+
+            # normalize by batch size
+            loss_total /= B
+
+            optimizer.zero_grad()
+            loss_total.backward()
+            optimizer.step()
+
+        print(f"Epoch {epoch+1}/{epochs}, Loss={loss_total.item():.4f}")
 
 
-device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-
-dataset = Stage2_dataset(
-    root_dir="/home/suhaib/ML_Project/data/transcg-data-2/transcg")
-
-train_dataloader = torch.utils.data.DataLoader(
-    dataset, batch_size=8, drop_last=True, shuffle=True)
-
-params = {
-    "in_dim": 3,
-    "feature_outdim": 1024,
-    "num_classes": 4,
-    "num_keypoints": 10
-}
-
-model = TransPoseNetwork(**params).cuda()
-
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-model.train()
 
 
-# return seg_logits, offsets, votes, centers
+
+if __name__ == "__main__":
+
+    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+    dataset = Stage2Dataset(
+        root_dir="/home/suhaib/ML_Project/data/transcg-data-1/transcg")
+
+    train_dataloader = torch.utils.data.DataLoader(
+        dataset, batch_size=8, drop_last=True, shuffle=True)
+
+    params = {
+        "in_dim": 3,
+        "feature_outdim": 1024,
+        "num_classes": 4,
+        "num_keypoints": 10
+    }
+
+    model = TransPoseNetwork(**params).cuda()
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    model.train()
+
+    train_epoch(model, train_dataloader, device=device, optimizer=optimizer, epochs=50)
