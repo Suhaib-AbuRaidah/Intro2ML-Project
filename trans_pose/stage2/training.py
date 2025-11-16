@@ -2,11 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import tqdm
-
+from torchvision import transforms as T
 import sys
 sys.path.append("/home/suhaib/ML_Project")
 
-from trans_pose.stage2.dataset_stage2 import Stage2Dataset
+from trans_pose.stage2.dataset_stage2 import Stage2Dataset, collate_fn
 from trans_pose.stage2.network import TransPoseNetwork
 from trans_pose.stage2.utilis import votes_from_offsets, mean_shift_clustering, rigid_transform_3D
 
@@ -95,10 +95,10 @@ if __name__ == "__main__":
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
     dataset = Stage2Dataset(
-        root_dir="/home/suhaib/ML_Project/data/transcg-data-1/transcg")
+        root_dir="/home/suhaib/ML_Project/data/transcg-data-1/transcg",transforms=T.ToTensor())
 
     train_dataloader = torch.utils.data.DataLoader(
-        dataset, batch_size=8, drop_last=True, shuffle=True)
+        dataset, batch_size=8, drop_last=True, shuffle=True, collate_fn=collate_fn)
 
     params = {
         "in_dim": 3,
