@@ -6,3 +6,4 @@ proposal/proposal data/
 **/pre_trained_models/
 papers/
 vis/
+Depth_Completion/*.txt
