@@ -54,7 +54,8 @@ def rigid_transform_3D(A, B):
     """
     Computes rigid transform T that aligns A → B using SVD.
     A, B: (K,3)
-    Returns: R (3×3), t (3)
+    Returns:
+        T: (4,4) homogeneous transform tensor
     """
     centroid_A = A.mean(0)
     centroid_B = B.mean(0)
@@ -68,9 +69,15 @@ def rigid_transform_3D(A, B):
 
     # reflection fix
     if torch.det(R) < 0:
-        Vt[-1,:] *= -1
+        Vt[-1, :] *= -1
         R = Vt.T @ U.T
 
     t = centroid_B - R @ centroid_A
 
-    return R, t
+    # build homogeneous transform
+    T = torch.eye(4, device=A.device, dtype=A.dtype)
+    T[:3, :3] = R
+    T[:3, 3] = t
+
+    return T
+

@@ -10,18 +10,22 @@ from trans_pose.stage2.dataset_stage2 import Stage2Dataset, collate_fn
 from trans_pose.stage2.network import TransPoseNetwork
 from trans_pose.stage2.utilis import votes_from_offsets, mean_shift_clustering, rigid_transform_3D
 
-def train_epoch(model, dataloader, device, optimizer, epochs=10):
-
+def train_epoch(model, dataloader,intrinsics, device, optimizer, epochs=10):
+    intrinsics_param = (intrinsics[0,0], intrinsics[1,1], intrinsics[0,2], intrinsics[1,2])  # fx, fy, cx, cy
     for epoch in range(epochs):
 
         for step, data in enumerate(dataloader):
 
             poses_list = data['poses']        # list of length B, each is dict: obj_id → (4,4)
             kpts_list  = data['keypoints']    # list of length B, each is dict: obj_id → (K,3)
-
-            seg_logits, offsets = model(data)
+            rgb = data['rgb'].to(device)              # (B, 3, H, W)
+            sn = data['sn'].to(device)                # (B, 3, H, W)
+            depth = data['depth'].to(device)          # (B, 1, H, W)
+            o_mask = data['mask'].to(device)            # (B, 1, H, W)
+            seg_logits, offsets,points = model(rgb,depth,sn,o_mask,intrinsics_param)  # (B, N, C), (B, N, K, 3)
             seg_labels = seg_logits.argmax(dim=-1)  # (B,N)
-            votes = votes_from_offsets(data, offsets)  # (B,N,K,3)
+
+            votes = votes_from_offsets(points, offsets)  # (B,N,K,3)
 
             B, N, K, _ = votes.shape
 
@@ -100,9 +104,12 @@ if __name__ == "__main__":
     train_dataloader = torch.utils.data.DataLoader(
         dataset, batch_size=8, drop_last=True, shuffle=True, collate_fn=collate_fn)
 
+    intrinsics = dataset.camera_intrisics
+
     params = {
-        "in_dim": 3,
-        "feature_outdim": 1024,
+         "img_outdim":128,
+         "normals_outdim":128,
+         "points_outdim":256,
         "num_classes": 4,
         "num_keypoints": 10
     }
@@ -112,4 +119,4 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     model.train()
 
-    train_epoch(model, train_dataloader, device=device, optimizer=optimizer, epochs=50)
+    train_epoch(model, train_dataloader,intrinsics, device=device, optimizer=optimizer, epochs=50)

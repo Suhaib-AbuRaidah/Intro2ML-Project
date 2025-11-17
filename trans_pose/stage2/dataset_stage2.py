@@ -86,6 +86,12 @@ class Stage2Dataset(Dataset):
 		depth = Image.open(item["depth"]).convert("L")     # depth is single channel
 		mask = Image.open(item["mask"]).convert("L")
 
+		target_size = (256, 256)
+		rgb = rgb.resize(target_size, Image.BILINEAR)
+		sn = sn.resize(target_size, Image.BILINEAR)
+		depth = depth.resize(target_size, Image.BILINEAR)
+		mask = mask.resize(target_size, Image.NEAREST)
+
 		# Load all corrected poses
 		pose_dict = {}
 		kepoints_dict = {}
@@ -142,5 +148,5 @@ if __name__=="__main__":
 			print(data["mask"].shape)
 			print(data["poses"])
 			print(data["keypoints"])
-			print(data["centers"].keys())
+			print(data["centers"])
 			break

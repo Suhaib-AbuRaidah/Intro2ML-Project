@@ -1,6 +1,6 @@
 # we are using for first training PointNet instead of PointNet++
 # todo: check differences later and see if worth using PointNet++
-from trans_pose.lib.pointnet.gnn_PointNetEncoder import PointNetEncoder
+from trans_pose.lib.pointnet.PointNetEncoder_file import PointNetEncoder
 import torch.nn as nn
 from typing import Tuple
 import torch
@@ -79,7 +79,20 @@ class PointNetBackbone(nn.Module):
             out_dim=1024       
         )
         # When global_feat=False, actual output is 1024 + 64 = 1088
-        
+
+
+        # # Disable BN inside STN when batch size = 1
+        # for m in self.pointnet.modules():
+        #     if isinstance(m, nn.BatchNorm1d):
+        #         m.track_running_stats = False
+        #         m.affine = True  # allow learning gamma/beta
+        #         m.eval()
+
+        #         def _disable_bn(module, x, y=None):
+        #             module.training = False
+        #         m.register_forward_pre_hook(_disable_bn)
+
+
         # Project from PointNet's 1088 to desired dimension
         self.feature_projection = nn.Sequential(
             nn.Conv1d(1088, 512, 1),

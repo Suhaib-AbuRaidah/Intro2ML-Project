@@ -33,8 +33,8 @@ class DenseFusion(nn.Module):
     def __init__(
         self,
         image_channels: int = 128,
-        normal_channels: int = 64,
-        pointnet_channels: int = 512,
+        normal_channels: int = 128,
+        pointnet_channels: int = 256,
         num_samples: int = 4096,
     ):
         super().__init__()
@@ -42,7 +42,7 @@ class DenseFusion(nn.Module):
         
         self.image_encoder = ImageEncoder(out_channels=image_channels)
         self.normal_encoder = NormalEncoder(out_channels=normal_channels)
-        self.point_encoder = PointNetBackbone()
+        self.point_encoder = PointNetBackbone(pointnet_channels)
         
         self.total_dim = image_channels + normal_channels + pointnet_channels
     def forward(
@@ -86,10 +86,8 @@ class DenseFusion(nn.Module):
         # Sample 2D features AT the point locations
         rgb_pts = sample_2d_features(feats_rgb, uv, downsample=4)      # [N, 128]
         normal_pts = sample_2d_features(feats_normal, uv, downsample=4) # [N, 64]
-        
         # Encode 3D geometry
         point_feats = self.point_encoder(points_xyz)  # [N, 512]
-        
         # Concatenate
         fused_features = torch.cat([
             point_feats,   # [N, 512]
@@ -97,5 +95,5 @@ class DenseFusion(nn.Module):
             normal_pts,    # [N, 64]
         ], dim=-1)  # [N, 704]
         
-        return fused_features, points_xyz
+        return fused_features, points_xyz.unsqueeze(0)  # (1, N, 3)
 # model = DenseFusion(image_channels=128, normal_channels=64, pointnet_channels=512, num_samples=4096)
