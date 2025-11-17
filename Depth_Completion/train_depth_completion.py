@@ -27,7 +27,7 @@ class DepthCompletionDataset(Dataset):
         d = load_and_preprocess_input_fast(sparse_path, 'Sparse Depth')
         n = load_and_preprocess_input_fast(normals_path, 'Normals')
         m = load_and_preprocess_input_fast(mask_path, 'Mask')
-        b = extract_boundaries_from_rgb(rgb_path)  # Canny edge detection on-the-fly
+        b = extract_boundaries_from_rgb(rgb_path) 
         gt = load_and_preprocess_input_fast(gt_path, 'Sparse Depth')
         
         inp = torch.cat([d, n, m, b], dim=0)
@@ -115,7 +115,7 @@ def validate(model, loader, device):
 def main():
     parser = argparse.ArgumentParser(description="Train Depth Completion Network with Canny Boundaries")
     parser.add_argument("--train_list", default="train_list.txt", help="Training list (sparse,normals,mask,rgb,gt)")
-    parser.add_argument("--val_list", default=None, help="Validation list (same format)")
+    parser.add_argument("--val_list", default="val_list.txt", help="Validation list (same format)")
     parser.add_argument("--epochs", type=int, default=20, help="Epochs")
     parser.add_argument("--batch", type=int, default=8, help="Batch size")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")

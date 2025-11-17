@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import os
 
-INPUT_H, INPUT_W = 720, 1280
+INPUT_H, INPUT_W = 360, 640
 NUM_INPUT_CHANNELS = 6 
 
 class ConvBlock(nn.Module):
