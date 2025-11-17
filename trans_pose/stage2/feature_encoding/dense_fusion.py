@@ -53,18 +53,6 @@ class DenseFusion(nn.Module):
         mask_inst: torch.Tensor,
         intrinsics: Tuple[float, float, float, float],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Args:
-            rgb: [3, H, W] or [B, 3, H, W] RGB image
-            depth_c: [1, H, W] or [B, 1, H, W] completed depth
-            normals: [3, H, W] or [B, 3, H, W] surface normals
-            mask_inst: [1, H, W] or [B, 1, H, W] instance mask
-            intrinsics: (fx, fy, cx, cy)
-            
-        Returns:
-            fused_features: [N, 704] per-point fused features
-            points_xyz: [N, 3] 3D point coordinates
-        """
         # Handle batching
         squeeze_batch = rgb.dim() == 3
         if squeeze_batch:
@@ -73,7 +61,7 @@ class DenseFusion(nn.Module):
             normals = normals.unsqueeze(0)
             mask_inst = mask_inst.unsqueeze(0)
         
-        # Currently only support batch_size=1
+        # batch_size=1
         if rgb.shape[0] != 1:
             raise NotImplementedError("Batch size > 1 not yet supported. Process samples individually.")
         
@@ -83,11 +71,11 @@ class DenseFusion(nn.Module):
         normals = normals.squeeze(0)
         mask_inst = mask_inst.squeeze(0)
         
-        # Step 1: Encode FULL images
+        # Encode FULL images
         feats_rgb = self.image_encoder(rgb)        # [128, H/4, W/4]
         feats_normal = self.normal_encoder(normals) # [64, H/4, W/4]
         
-        # Step 2: Build point cloud from masked depth
+        # Build point cloud from masked depth
         points_xyz, uv = build_instance_points(
             depth_c=depth_c,
             mask_inst=mask_inst,
@@ -95,14 +83,14 @@ class DenseFusion(nn.Module):
             num_samples=self.num_samples,
         )  # points_xyz: [N, 3], uv: [N, 2]
         
-        # Step 3: Sample 2D features AT the point locations
+        # Sample 2D features AT the point locations
         rgb_pts = sample_2d_features(feats_rgb, uv, downsample=4)      # [N, 128]
         normal_pts = sample_2d_features(feats_normal, uv, downsample=4) # [N, 64]
         
-        # Step 4: Encode 3D geometry
+        # Encode 3D geometry
         point_feats = self.point_encoder(points_xyz)  # [N, 512]
         
-        # Step 5: Concatenate
+        # Concatenate
         fused_features = torch.cat([
             point_feats,   # [N, 512]
             rgb_pts,       # [N, 128]
