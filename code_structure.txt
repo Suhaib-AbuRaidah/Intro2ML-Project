@@ -1,0 +1,50 @@
+Stage 1:
+- surface normal prediction from RGB:
+    DeepLabV3 with ResNet50 backbone
+    input: RGB image [B, 3, H, W]
+    output: surface normals [B, 3, H, W] with values in [-1, 1]
+
+- depth prediction from RGB:
+
+
+Stage 2:
+Phase 1: Feature Extraction 
+- image encoder
+    input: RGB image [B, 3, H, W]
+    output: image features [B, 64, H/4, W/4]
+
+- surface normal encoder 
+    input: surface normals [B, 3, H, W]
+    output: normal features [B, 32, H/4, W/4]
+
+- point cloud encoder 
+    input: points_xyz [N, 3] from depth and intrinsics ++ point_features [N, 6] of RGB and normals
+    out`put: geometric features [N, 128]
+
+--> DenseFusion
+
+
+Phase 2: 2D Segmentation and Keypoint Detection
+
+
+Phase 3: Pose Estimation
+
+
+-------------------------------------------------------------------------------------------
+Input Image:    [3, 480, 640]
+Input Normals:  [3, 480, 640]
+Input Depth:    [1, 480, 640]
+Input Mask:     [1, 480, 640]
+
+# After encoders:
+ImageEncoder:    [128, 120, 160]   (480/4 = 120, 640/4 = 160)
+NormalEncoder:   [64, 120, 160]   
+PointNetBackbone: [N, 512]         (N ≤ 4096 points)
+
+# After sampling at uv locations:
+Image features:  [N, 128]  
+Normal features: [N, 64]   
+Point features:  [N, 512]  
+
+# Total concatenated:
+Combined: [N, 128 + 64 + 512] = [N, 704]  
