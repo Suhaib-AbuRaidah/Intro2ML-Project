@@ -49,7 +49,7 @@ class TransPoseNetwork(nn.Module):
         self.features = DenseFusion(image_channels=img_outdim,
                                     normal_channels=normals_outdim,
                                     pointnet_channels=points_outdim,
-                                    num_samples=1024)
+                                    num_samples=4096)
         
         feature_outdim = img_outdim + normals_outdim + points_outdim
         self.seg_head = PointSegHead(feature_outdim, num_classes)

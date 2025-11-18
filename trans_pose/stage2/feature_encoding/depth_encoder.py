@@ -76,7 +76,7 @@ class PointNetBackbone(nn.Module):
             global_feat=False,       
             feature_transform=True,  
             channel=3,      
-            out_dim=1024       
+            out_dim=out_dim       
         )
         # When global_feat=False, actual output is 1024 + 64 = 1088
 
@@ -95,7 +95,7 @@ class PointNetBackbone(nn.Module):
 
         # Project from PointNet's 1088 to desired dimension
         self.feature_projection = nn.Sequential(
-            nn.Conv1d(1088, 512, 1),
+            nn.Conv1d(320, 512, 1),
             nn.BatchNorm1d(512),
             nn.ReLU(inplace=True),
             nn.Dropout(0.3),

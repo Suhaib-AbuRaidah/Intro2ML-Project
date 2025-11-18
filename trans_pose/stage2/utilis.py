@@ -49,14 +49,7 @@ def mean_shift_clustering(votes, mask=None, bandwidth=0.05, num_iters=10, eps=1e
             break
     return centers  # (B,K,3)
 
-
 def rigid_transform_3D(A, B):
-    """
-    Computes rigid transform T that aligns A → B using SVD.
-    A, B: (K,3)
-    Returns:
-        T: (4,4) homogeneous transform tensor
-    """
     centroid_A = A.mean(0)
     centroid_B = B.mean(0)
     
@@ -64,20 +57,29 @@ def rigid_transform_3D(A, B):
     BB = B - centroid_B
 
     H = AA.T @ BB
+    H = AA.T @ BB
+    if torch.linalg.norm(H) < 1e-6:
+        # return identity transform
+        T = torch.eye(4, device=A.device, dtype=A.dtype)
+        return T
     U, S, Vt = torch.linalg.svd(H)
+
     R = Vt.T @ U.T
 
-    # reflection fix
+    # reflection fix - no inplace ops
     if torch.det(R) < 0:
-        Vt[-1, :] *= -1
-        R = Vt.T @ U.T
+        # make a modified Vt without touching the original
+        Vt_new = Vt.clone()
+        Vt_new[-1, :] = -Vt_new[-1, :]
+        R = Vt_new.T @ U.T
 
     t = centroid_B - R @ centroid_A
 
-    # build homogeneous transform
     T = torch.eye(4, device=A.device, dtype=A.dtype)
+    T = T.clone()                        # ensure safe
     T[:3, :3] = R
     T[:3, 3] = t
 
     return T
+
 

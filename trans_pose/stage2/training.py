@@ -15,6 +15,7 @@ def train_epoch(model, dataloader,intrinsics, device, optimizer, epochs=10):
     for epoch in range(epochs):
 
         for step, data in enumerate(dataloader):
+            print(f"Epoch {epoch+1}, Step {step+1}/{len(dataloader)}")
 
             poses_list = data['poses']        # list of length B, each is dict: obj_id → (4,4)
             kpts_list  = data['keypoints']    # list of length B, each is dict: obj_id → (K,3)
@@ -87,7 +88,7 @@ def train_epoch(model, dataloader,intrinsics, device, optimizer, epochs=10):
             optimizer.zero_grad()
             loss_total.backward()
             optimizer.step()
-
+            print(f"loss_total: {loss_total}")
         print(f"Epoch {epoch+1}/{epochs}, Loss={loss_total.item():.4f}")
 
 
@@ -102,7 +103,7 @@ if __name__ == "__main__":
         root_dir="/home/suhaib/ML_Project/data/transcg-data-1/transcg",transforms=T.ToTensor())
 
     train_dataloader = torch.utils.data.DataLoader(
-        dataset, batch_size=8, drop_last=True, shuffle=True, collate_fn=collate_fn)
+        dataset, batch_size=1, drop_last=True, shuffle=True, collate_fn=collate_fn)
 
     intrinsics = dataset.camera_intrisics
 
