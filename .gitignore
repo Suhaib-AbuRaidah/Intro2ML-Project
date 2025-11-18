@@ -7,4 +7,4 @@ proposal/proposal data/
 papers/
 vis/
 Depth_Completion/*.txt
-checkpoints/
+*/output/
