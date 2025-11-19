@@ -85,7 +85,7 @@ def main(save_dir="./trans_pose/stage1/surface_normals/pretrained_models"):
 	# dataset_test = SurfaceNormalDataset(transforms=get_transform(train=False))
 
 	dataset = TransCGSurfaceNormalDataset(
-		root_dir="/home/suhaib/ML_Project/data/transcg-data-2/transcg",
+		root_dir="F:/ML-Dataset/train",
 		transforms=get_transform(train=True)
 	)
 

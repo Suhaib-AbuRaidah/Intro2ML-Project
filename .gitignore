@@ -6,5 +6,9 @@ proposal/proposal data/
 **/pre_trained_models/
 papers/
 vis/
+<<<<<<< HEAD
 
 tanscg-data-2/
+=======
+*/output/
+>>>>>>> 30f503053634d8b5581dcb21de6bdf4cef365da4

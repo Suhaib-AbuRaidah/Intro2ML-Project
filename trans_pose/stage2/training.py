@@ -133,8 +133,13 @@ if __name__ == "__main__":
 
     # 1. DATASETS
     # UPDATE THESE PATHS TO YOUR ACTUAL WINDOWS PATHS
+<<<<<<< HEAD
     train_dir = r"c:\Users\user\Desktop\AUB\Intro2ML\Project\Intro2ML-Project\tanscg-data-2\train"
     keypoints_dir = r"c:\Users\user\Desktop\AUB\Intro2ML\Project\Intro2ML-Project\tanscg-data-2\keypoints"
+=======
+    train_dir = "F:/ML-Dataset/train" 
+    valid_dir = "F:/ML-Dataset/valid"
+>>>>>>> 30f503053634d8b5581dcb21de6bdf4cef365da4
 
     train_dataset = Stage2Dataset(
         root_dir=train_dir,
