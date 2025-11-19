@@ -66,7 +66,7 @@ if __name__ == "__main__":
     # Example structure from your test.txt line:
     # sparse_depth_path, normals_path, mask_path, rgb_path, gt_depth_path
 
-    example_gt_path = 'F:/ML-Dataset/transcg-data-9/transcg/scene81/9/depth1-gt.png'
+    example_gt_path = 'output/completed_depth_raw.png'  # <-- UPDATE THIS PATH
     
     # Load and display the depth map
     depth_data = load_depth_map_for_visualization(example_gt_path)
