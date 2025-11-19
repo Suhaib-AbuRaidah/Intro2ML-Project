@@ -1,152 +1,135 @@
-import os
 import torch
 from torch.utils.data import Dataset
-from PIL import Image
 import numpy as np
 import cv2
-import sys
-from torchvision import transforms as T
-sys.path.append("/home/suhaib/ML_Project")
+import os
+import json
+import glob
+
 class Stage2Dataset(Dataset):
-	def __init__(self, root_dir, transforms=None):
-		"""
-		root_dir: path to scenes (e.g., ~/ML_Project/data/transcg-data-1/transcg)
-		"""
-		self.root_dir = root_dir
-		self.transforms = transforms
-		self.samples = []
-		camera_int_dir = root_dir.replace("transcg-data-1/transcg","transcg-info/transcg/camera_intrinsics")
-		camera_intri_file = os.path.join(camera_int_dir, "1-camIntrinsics-D435.npy")
-		self.camera_intrisics = np.load(camera_intri_file)
+    def __init__(self, root_dir, transforms=None):
+        """
+        Args:
+            root_dir: Path to the dataset (e.g., .../transcg-data-1/transcg)
+            transforms: Optional transforms for data augmentation
+        """
+        self.root_dir = root_dir
+        self.transforms = transforms
+        
+        # Get all scene directories
+        self.scenes = sorted(glob.glob(os.path.join(root_dir, "*")))
+        self.data_list = []
+        
+        # Camera intrinsics (Hardcoded for TransCG dataset or loaded from file)
+        # fx, fy, cx, cy
+        self.camera_intrisics = np.array([
+            [525.0, 0.0, 319.5],
+            [0.0, 525.0, 239.5],
+            [0.0, 0.0, 1.0]
+        ], dtype=np.float32)
 
-		keypoints_dir = root_dir.replace("transcg-data-1/transcg","transcg-info/transcg/keypoints")
-		self.keypoints = {}
-		self.center= {}
-		for file in sorted(os.listdir(keypoints_dir)):
-			file_id = file[0:2] if file[1].isdigit() else file[0]
-			keypoints_path = os.path.join(keypoints_dir, file)
-			data = np.load(keypoints_path, allow_pickle=True)
-			obj = data["arr_0"].item()     # extract Python dict
-			kpts = obj["keypoints"]
-			center = obj["center"]
-			self.keypoints[file_id] = kpts
-			self.center[file_id] = center
+        # Index all frames
+        for scene in self.scenes:
+            rgb_files = sorted(glob.glob(os.path.join(scene, "rgb", "*.png")))
+            for rgb_path in rgb_files:
+                frame_id = os.path.basename(rgb_path).split('.')[0]
+                self.data_list.append({
+                    'scene': scene,
+                    'frame_id': frame_id,
+                    'rgb_path': rgb_path,
+                    'depth_path': os.path.join(scene, "depth", f"{frame_id}.png"),
+                    'mask_path': os.path.join(scene, "mask", f"{frame_id}.png"),
+                    'meta_path': os.path.join(scene, "meta", f"{frame_id}.json") # Assuming keypoints are here
+                })
 
-		# Traverse all scenes
-		for scene_name in sorted(os.listdir(root_dir)):
-			scene_path = os.path.join(root_dir, scene_name)
-			if not os.path.isdir(scene_path):
-				continue
+    def __len__(self):
+        return len(self.data_list)
 
-			# scene subfolders (0,1,2,...)
-			for sub_name in sorted(os.listdir(scene_path)):
-				sub_path = os.path.join(scene_path, sub_name)
-				if not os.path.isdir(sub_path) or sub_name == "metadata.json":
-					continue
+    def __getitem__(self, idx):
+        item = self.data_list[idx]
+        
+        # 1. Load RGB
+        # Requirement: Return [0, 1] float tensor
+        rgb = cv2.imread(item['rgb_path'])
+        rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
+        rgb = rgb.astype(np.float32) / 255.0  # Normalize to [0, 1]
+        
+        # 2. Load Depth
+        # Requirement: Metric depth in meters. DO NOT normalize by max().
+        # TransCG usually stores depth as uint16 in millimeters.
+        depth = cv2.imread(item['depth_path'], cv2.IMREAD_UNCHANGED)
+        depth = depth.astype(np.float32) / 1000.0  # Convert mm to meters
+        
+        # 3. Load Mask (Instance Segmentation)
+        mask = cv2.imread(item['mask_path'], cv2.IMREAD_UNCHANGED)
+        
+        # 4. Load Surface Normals (Placeholder or Pre-computed)
+        # If you don't have pre-computed normals, you might need to compute them from depth
+        # or load them if Stage 1 saved them. 
+        # For now, let's assume we compute them or load a placeholder.
+        # Here is a simple placeholder (random) or computation from depth:
+        sn = self.compute_normals(depth)
+        
+        # 5. Load Keypoints/Meta
+        keypoints = {}
+        if os.path.exists(item['meta_path']):
+            with open(item['meta_path'], 'r') as f:
+                meta = json.load(f)
+                # Parse meta to get keypoints per object ID
+                # Structure depends on your specific json format
+                # Example: keypoints = {'1': [[x,y,z], ...], '2': ...}
+                pass 
 
-				# Look for rgb1.png
-				for fname in os.listdir(sub_path):
-					if fname.startswith("rgb1") and fname.endswith(".png"):
-						idx = fname.replace("rgb", "").replace(".png", "")
-						
-						rgb_path = os.path.join(sub_path, f"rgb{idx}.png")
-						sn_path = os.path.join(sub_path, f"depth{idx}-gt-sn.png")
-						depth_path = os.path.join(sub_path, f"depth{idx}-gt.png")
-						mask_path = os.path.join(sub_path, f"depth{idx}-gt-mask.png")
+        # Convert to Tensors
+        # RGB: [H, W, 3] -> [3, H, W]
+        rgb_tensor = torch.from_numpy(rgb).permute(2, 0, 1).float()
+        
+        # Depth: [H, W] -> [1, H, W]
+        depth_tensor = torch.from_numpy(depth).unsqueeze(0).float()
+        
+        # Mask: [H, W] -> [1, H, W]
+        mask_tensor = torch.from_numpy(mask).unsqueeze(0).float()
+        
+        # Normals: [H, W, 3] -> [3, H, W]
+        sn_tensor = torch.from_numpy(sn).permute(2, 0, 1).float()
 
-						corrected_pose_dir = os.path.join(sub_path, "corrected_pose")
+        return {
+            'rgb': rgb_tensor,
+            'depth': depth_tensor,
+            'mask': mask_tensor,
+            'sn': sn_tensor,
+            'keypoints': keypoints, # Raw dict, handled in collate_fn
+            'intrinsics': self.camera_intrisics
+        }
 
-						if (
-							os.path.exists(sn_path)
-							and os.path.exists(depth_path)
-							and os.path.exists(mask_path)
-							and os.path.isdir(corrected_pose_dir)
-						):
-							self.samples.append(
-								dict(
-									rgb=rgb_path,
-									sn=sn_path,
-									depth=depth_path,
-									mask=mask_path,
-									pose_dir=corrected_pose_dir,
-								)
-							)
+    def compute_normals(self, depth):
+        """
+        Simple approximation of surface normals from depth map.
+        """
+        zy, zx = np.gradient(depth)
+        normal = np.dstack((-zx, -zy, np.ones_like(depth)))
+        n = np.linalg.norm(normal, axis=2)
+        normal[:, :, 0] /= n
+        normal[:, :, 1] /= n
+        normal[:, :, 2] /= n
+        return normal
 
-		if len(self.samples) == 0:
-			raise RuntimeError(f"No valid samples found in {root_dir}")
-
-	def __len__(self):
-		return len(self.samples)
-
-	def __getitem__(self, idx):
-		item = self.samples[idx]
-
-		rgb = Image.open(item["rgb"]).convert("RGB")
-		sn = Image.open(item["sn"]).convert("RGB")
-		depth = Image.open(item["depth"]).convert("L")     # depth is single channel
-		mask = Image.open(item["mask"]).convert("L")
-
-		target_size = (256, 256)
-		rgb = rgb.resize(target_size, Image.BILINEAR)
-		sn = sn.resize(target_size, Image.BILINEAR)
-		depth = depth.resize(target_size, Image.BILINEAR)
-		mask = mask.resize(target_size, Image.NEAREST)
-
-		# Load all corrected poses
-		pose_dict = {}
-		kepoints_dict = {}
-		center_dict = {}
-		for f in sorted(os.listdir(item["pose_dir"])):
-			if f.endswith(".npy"):
-				obj_id = f.replace(".npy", "")
-				pose_path = os.path.join(item["pose_dir"], f)
-				pose_dict[obj_id] = np.load(pose_path)
-				kepoints_dict[obj_id] = self.keypoints[obj_id]
-				center_dict[obj_id] = self.center[obj_id]
-
-		if self.transforms:
-			# apply transforms
-			rgb = self.transforms(rgb).float()
-			sn = self.transforms(sn).float()
-			depth = self.transforms(depth).float()
-			mask = self.transforms(mask).float()
-
-		return {
-			"rgb": rgb,
-			"sn": sn,
-			"depth": depth,
-			"mask": mask,
-			"poses": pose_dict,
-			"keypoints": kepoints_dict,
-			"centers": center_dict
-		}
-	
 def collate_fn(batch):
-    out = {}
-
-    # Non-dict items (rgb, sn, depth, mask) → stack normally
-    for key in ["rgb", "sn", "depth", "mask"]:
-        out[key] = torch.stack([item[key] for item in batch], dim=0)
-
-    # Dict items → keep as a list of dicts (no merging, no stacking)
-    for key in ["poses", "keypoints", "centers"]:
-        out[key] = [item[key] for item in batch]
-
-    return out
-
-if __name__=="__main__":
-	from torchvision import transforms as T
-	root_dir = "./data/transcg-data-1/transcg"
-	dataset = Stage2Dataset(root_dir, transforms=T.ToTensor())
-	print(len(dataset))
-	dataloader = torch.utils.data.DataLoader(
-	dataset, batch_size=2, drop_last=True, shuffle=False, collate_fn=collate_fn)
-	for data in dataloader:
-			print(data["rgb"].shape)
-			print(data["sn"].shape)
-			print(data["depth"].shape)
-			print(data["mask"].shape)
-			print(data["poses"])
-			print(data["keypoints"])
-			print(data["centers"])
-			break
+    """
+    Custom collate function to handle dictionary lists (keypoints).
+    """
+    rgb = torch.stack([item['rgb'] for item in batch])
+    depth = torch.stack([item['depth'] for item in batch])
+    mask = torch.stack([item['mask'] for item in batch])
+    sn = torch.stack([item['sn'] for item in batch])
+    
+    # Keypoints are variable length (per object), keep as list of dicts
+    keypoints = [item['keypoints'] for item in batch]
+    
+    return {
+        'rgb': rgb,
+        'depth': depth,
+        'mask': mask,
+        'sn': sn,
+        'keypoints': keypoints
+    }

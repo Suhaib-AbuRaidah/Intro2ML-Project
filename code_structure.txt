@@ -31,20 +31,81 @@ Phase 3: Pose Estimation
 
 
 -------------------------------------------------------------------------------------------
-Input Image:    [3, 480, 640]
-Input Normals:  [3, 480, 640]
-Input Depth:    [1, 480, 640]
-Input Mask:     [1, 480, 640]
+Inputs:
+rgb: [3, H, W]
+depth_c: [1, H, W]
+normals: [3, H, W]
+mask_inst: [1, H, W]
+intrinsics: (fx, fy, cx, cy)
 
-# After encoders:
-ImageEncoder:    [128, 120, 160]   (480/4 = 120, 640/4 = 160)
-NormalEncoder:   [64, 120, 160]   
-PointNetBackbone: [N, 512]         (N ≤ 4096 points)
+Image encoder (image_encoder.py):
+In: rgb [3, H, W]
+Out: [128, H/4, W/4] (stride 4)
 
-# After sampling at uv locations:
-Image features:  [N, 128]  
-Normal features: [N, 64]   
-Point features:  [N, 512]  
+Normal encoder (surface_normal_encoder.py):
+In: normals [3, H, W]
+Out: [normal_channels, H/4, W/4] (defaults to 128 in DenseFusion ctor)
 
-# Total concatenated:
-Combined: [N, 128 + 64 + 512] = [N, 704]  
+Point building (depth_encoder.build_instance_points):
+In: depth_c [1, H, W], mask_inst [1, H, W]
+Out: points_xyz [N, 3], uv [N, 2] (N ≤ num_samples, default 4096)
+
+Feature sampling (sample_2d_features, downsample=4):
+rgb_pts: [N, 128] sampled from image features
+normal_pts: [N, normal_channels] sampled from normal features
+
+Point encoder (PointNetBackbone):
+In: points_xyz [N, 3]
+Out: point_feats [N, pointnet_channels] (defaults to 256 in DenseFusion)
+
+Fusion:
+Concatenate [point_feats, rgb_pts, normal_pts] → fused_features [N, 128 + normal_channels + pointnet_channels] (defaults to [N, 128 + 128 + 256] = [N, 512] in code, though comments still mention 704)
+
+DenseFusion output (dense_fusion.py (line 98)):
+fused_features [N, F]
+points_xyz [1, N, 3] (adds batch dim)
+
+Heads (network.py):
+Input features are unsqueezed to [1, N, F]
+PointSegHead: [1, N, F] → [1, N, num_classes]
+OffsetHead: [1, N, F] → [1, N, num_keypoints, 3]
+
+Losses:
+├─ Keypoint Loss (BCE on heatmaps)
+├─ Pose Loss (L1 on quaternion + translation)
+└─ Total weighted loss
+-------------------------------------------------------------------------------------------
+Code issues:
+DONE 1- DesnseFusion used in TransPoseNetwork with incorrect features order for the forward function
+2- DenseFusion only supports batch size=1 and returns features without a batch dimension 
+TransPoseNetwork re-adds it 
+3- the default channel counts differ from the header comment 
+normal encoder is built with normal_channels set to 128 
+but NormalEncoder sized for 64 
+DONE 4- PointNetBackbone with global_feat=false and out_dim=512 returns 576 channels but features_projection expects 320 
+it departs from the intended 1088 output projection 
+DONE 5- Point sampling doesnt filter zero or invalid depth
+it should be discarded before backprojection 
+why? keeping zeros yields many degenerate points at the camera and noisy features
+DONE 6- when valid_indices < num_samples we return fewer points instead of padding or duplication 
+we need to keep fixed N which stabilizes the batching and loss scaling 
+7- densefusion and TransPoseNetwork both hard-code batch size to 1 and unsqueeze nad squeeze tensors manually 
+8- PointNetEncoder_file is used instead of the 1088-dim variant
+9- in depth_encoder; missing depth validity check in projection 
+10- in training; no gradient clipping in training loop 
+11- in training; loss weight imbalance, each with different magnitudes
+12- point net feature transform loss never used 
+13- image encoder; UV coordinates not clamped to image size
+14- network; doesnt predict quaternion, 
+pose_head = nn.Linear(128, 7)  # quat (4) + trans (3)
+Output quaternions are not normalized to unit norm!
+15- in network; there are offsets from each point to K Keypoint
+but loss computation might expect absolute keypoint positions
+16- intrinsics are hard coded for now 
+change it for later generalization
+17- in network; PointSegHead uses wrong batch normalization 
+BatchNorm1d expects [B*N, F] but statistics are computed over B*N samples
+This mixes statistics across different objects in batch!
+18- in training; no validation loop
+19- in training; no learning rate scheduling
+20- in utils; nested loops are slowing down the training for sure 

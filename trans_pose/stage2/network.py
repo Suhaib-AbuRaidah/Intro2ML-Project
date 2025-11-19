@@ -5,16 +5,18 @@ import torch.nn.functional as F
 from trans_pose.stage2.feature_encoding.dense_fusion import DenseFusion
 
 class PointSegHead(nn.Module):
-    def __init__(self, in_dim, num_classes):
+    def __init__(self, in_dim: int, num_classes: int):
         super().__init__()
         self.mlp = nn.Sequential(
             nn.Linear(in_dim, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
+            nn.LayerNorm(256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
             
             nn.Linear(256, 128),
-            nn.BatchNorm1d(128),
-            nn.ReLU(),
+            nn.LayerNorm(128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
             
             nn.Linear(128, num_classes)          
         )
@@ -26,25 +28,32 @@ class PointSegHead(nn.Module):
         return out.reshape(B, N, -1)   # class per point
 
 class OffsetHead(nn.Module):
-    def __init__(self, in_dim, num_keypoints):
+    def __init__(self, in_dim: int, num_keypoints: int):
         super().__init__()
+        self.num_keypoints = num_keypoints
 
         self.mlp = nn.Sequential(
             nn.Linear(in_dim, 256),
-            nn.ReLU(),
+            nn.LayerNorm(256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            
             nn.Linear(256, 128),
-            nn.ReLU(),
+            nn.LayerNorm(128),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
             nn.Linear(128, num_keypoints * 3)
         )
 
     def forward(self, x):
         # x: (B, N, F)
-        B, N, F = x.shape
+        B, N, _ = x.shape
+        x = x.reshape(B * N, -1)      # (B*N, F)
         out = self.mlp(x)             # (B, N, K*3)
-        return out.reshape(B, N, -1, 3)  # (B, N, K, 3)
+        return out.reshape(B, N, self.num_keypoints, 3)  # (B, N, K, 3)
     
 class TransPoseNetwork(nn.Module):
-    def __init__(self, img_outdim=128,normals_outdim=128,points_outdim=256,num_classes=4, num_keypoints=10):
+    def __init__(self, img_outdim=128,normals_outdim=64,points_outdim=256,num_classes=4, num_keypoints=10):
         super().__init__()
         self.features = DenseFusion(image_channels=img_outdim,
                                     normal_channels=normals_outdim,
@@ -55,11 +64,27 @@ class TransPoseNetwork(nn.Module):
         self.seg_head = PointSegHead(feature_outdim, num_classes)
         self.offset_head = OffsetHead(feature_outdim, num_keypoints)
 
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, (nn.Conv2d, nn.Conv1d)):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, (nn.LayerNorm, nn.BatchNorm1d, nn.BatchNorm2d)):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+
     def forward(self, img,normals,depth_c,mask_inst,intrinsics):
         
         # points: (B, N, 3) or (B, N, feat)
-        features,points= self.features(img,normals,depth_c,mask_inst,intrinsics)  # (B, N, F)
-        features=features.unsqueeze(0)
+        features, points, trans_feat= self.features(img, depth_c, normals, mask_inst, intrinsics)  # (B, N, F)
+        # features=features.unsqueeze(0)
         seg_logits = self.seg_head(features)  # (B, N, C)
         offsets = self.offset_head(features)  # (B, N, K, 3)
-        return seg_logits, offsets,points
+        return seg_logits, offsets, points, trans_feat

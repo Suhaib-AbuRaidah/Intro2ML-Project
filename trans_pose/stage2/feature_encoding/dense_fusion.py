@@ -11,6 +11,7 @@
 # PointNet:	in:[N, 3]	out:[N, 512]	Only object 3D points
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Tuple
 
 from .image_encoder import ImageEncoder, sample_2d_features
@@ -33,7 +34,7 @@ class DenseFusion(nn.Module):
     def __init__(
         self,
         image_channels: int = 128,
-        normal_channels: int = 128,
+        normal_channels: int = 64,
         pointnet_channels: int = 256,
         num_samples: int = 4096,
     ):
@@ -42,7 +43,7 @@ class DenseFusion(nn.Module):
         
         self.image_encoder = ImageEncoder(out_channels=image_channels)
         self.normal_encoder = NormalEncoder(out_channels=normal_channels)
-        self.point_encoder = PointNetBackbone(pointnet_channels)
+        self.point_encoder = PointNetBackbone(out_dim=pointnet_channels)
         
         self.total_dim = image_channels + normal_channels + pointnet_channels
     def forward(
@@ -53,47 +54,64 @@ class DenseFusion(nn.Module):
         mask_inst: torch.Tensor,
         intrinsics: Tuple[float, float, float, float],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        # Handle batching
-        squeeze_batch = rgb.dim() == 3
-        if squeeze_batch:
+        """
+        Args:
+            rgb: [B, 3, H, W]
+            depth_c: [B, 1, H, W]
+            normals: [B, 3, H, W]
+            mask_inst: [B, 1, H, W]
+            intrinsics: (fx, fy, cx, cy)
+        Returns:
+            fused_features: [B, N, total_dim]
+            points_xyz: [B, N, 3]
+        """
+        # Handle unbatched input [C, H, W] -> [1, C, H, W]
+        if rgb.dim() == 3:
             rgb = rgb.unsqueeze(0)
             depth_c = depth_c.unsqueeze(0)
             normals = normals.unsqueeze(0)
             mask_inst = mask_inst.unsqueeze(0)
-        
-        # batch_size=1
-        if rgb.shape[0] != 1:
-            raise NotImplementedError("Batch size > 1 not yet supported. Process samples individually.")
-        
-        # Remove batch dimension for processing
-        rgb = rgb.squeeze(0)
-        depth_c = depth_c.squeeze(0)
-        normals = normals.squeeze(0)
-        mask_inst = mask_inst.squeeze(0)
-        
-        # Encode FULL images
-        feats_rgb = self.image_encoder(rgb)        # [128, H/4, W/4]
-        feats_normal = self.normal_encoder(normals) # [64, H/4, W/4]
-        
-        # Build point cloud from masked depth
-        points_xyz, uv = build_instance_points(
-            depth_c=depth_c,
-            mask_inst=mask_inst,
-            intrinsics=intrinsics,
-            num_samples=self.num_samples,
-        )  # points_xyz: [N, 3], uv: [N, 2]
-        
-        # Sample 2D features AT the point locations
-        rgb_pts = sample_2d_features(feats_rgb, uv, downsample=4)      # [N, 128]
-        normal_pts = sample_2d_features(feats_normal, uv, downsample=4) # [N, 64]
-        # Encode 3D geometry
-        point_feats = self.point_encoder(points_xyz)  # [N, 512]
-        # Concatenate
+
+        # encode 2D images (vectorized over batch)
+        feats_rgb = self.image_encoder(rgb)        # [B, 128, H/4, W/4]
+        feats_normal = self.normal_encoder(normals) # [B, 64, H/4, W/4]
+
+        # build point clouds(looping over batch because point sampling is random/variable)
+        points_list = []
+        uv_list = []
+
+        # how to define B
+        # ghina - review again
+        B = rgb.shape[0] 
+
+        for i in range(B):
+            # build instance points hanfles [1, H, W] inputs 
+            points_xyz, uv = build_instance_points(
+                depth_c=depth_c[i:i+1],
+                mask_inst=mask_inst[i:i+1],
+                intrinsics=intrinsics,
+                num_samples=self.num_samples,
+            )  # points_xyz: [N, 3], uv: [N, 2]
+            points_list.append(points_xyz)
+            uv_list.append(uv)
+
+        points_xyz = torch.stack(points_list, dim=0)  # [B, N, 3]
+        uv = torch.stack(uv_list, dim=0)              # [B, N, 2]
+
+        # sample 2D features at 3D point projections
+        rgb_pts = sample_2d_features(feats_rgb, uv, downsample=4)      # [B, N, 128]
+        normal_pts = sample_2d_features(feats_normal, uv, downsample=4) # [B, N, 64]
+
+
+        # encode 3D geometry (vectorized over batch)
+        point_feats, trans_feat = self.point_encoder(points_xyz)  # [B, N, 512] 
+        # is it 256 or 512? -- ghina - review again 
         fused_features = torch.cat([
-            point_feats,   # [N, 512]
-            rgb_pts,       # [N, 128]
-            normal_pts,    # [N, 64]
-        ], dim=-1)  # [N, 704]
-        
-        return fused_features, points_xyz.unsqueeze(0)  # (1, N, 3)
+            point_feats,   # [B, N, 256]
+            rgb_pts,       # [B, N, 128]
+            normal_pts,    # [B, N, 64]
+        ], dim=-1)  # [B, N, 448]
+
+        return fused_features, points_xyz, trans_feat
+
 # model = DenseFusion(image_channels=128, normal_channels=64, pointnet_channels=512, num_samples=4096)
