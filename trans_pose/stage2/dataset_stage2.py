@@ -5,6 +5,7 @@ import cv2
 import os
 import json
 import glob
+from pathlib import Path
 
 class Stage2Dataset(Dataset):
     def __init__(self, root_dir, transforms=None):
@@ -21,18 +22,44 @@ class Stage2Dataset(Dataset):
             [0.0, 0.0, 1.0]
         ], dtype=np.float32)
 
-        for scene in self.scenes:
-            rgb_files = sorted(glob.glob(os.path.join(scene, "rgb", "*.png")))
-            for rgb_path in rgb_files:
-                frame_id = os.path.basename(rgb_path).split('.')[0]
-                self.data_list.append({
-                    'scene': scene,
-                    'frame_id': frame_id,
-                    'rgb_path': rgb_path,
-                    'depth_path': os.path.join(scene, "depth", f"{frame_id}.png"),
-                    'mask_path': os.path.join(scene, "mask", f"{frame_id}.png"),
-                    'meta_path': os.path.join(scene, "meta", f"{frame_id}.json")
-                })
+        for scene_dir_name in self.scenes:
+            # Resolve the full path to the current scene directory
+            scene_path = Path(scene_dir_name)
+            
+            # 3. Find the subfolders inside the scene (e.g., '0' or '1')
+            # Use glob to find all directories one level deep inside the scene_path
+            subfolder_paths = [p for p in scene_path.iterdir() if p.is_dir()]
+
+            if not subfolder_paths:
+                # Add print here if you want to know which scenes are skipped
+                # print(f"Warning: Skipping scene {scene_path.name}. No subfolders found.")
+                continue
+
+            # Iterate through all subfolders found (e.g., '0', '1', '2'...)
+            for subfolder_path in subfolder_paths:
+                # Now search for RGB files inside the 'rgb' directory of the subfolder
+                # subfolder_path / "rgb" / "*.png"
+                rgb_files = sorted(glob.glob(os.path.join(subfolder_path, "rgb1.png")))
+                
+                if rgb_files:
+                    print(f" Found {len(rgb_files)} files in: {subfolder_path}")
+                else:
+                    print(f"Found 0 files in: {subfolder_path}")
+
+                for rgb_path_str in rgb_files:
+                    rgb_path = Path(rgb_path_str)
+                    frame_id = rgb_path.stem # Gets filename without extension (e.g., '00000')
+                    
+                    # Construct other paths relative to the subfolder_path
+                    self.data_list.append({
+                        # Store the path to the current subfolder as the scene/base for retrieval
+                        'base_path': subfolder_path, 
+                        'frame_id': frame_id,
+                        'rgb_path': rgb_path_str, # Store as string for easy os.path usage, or keep as Path
+                        'depth_path': os.path.join(subfolder_path, "depth1.png"),
+                        'mask_path': os.path.join(subfolder_path, "depth1-gt-mask.png"),
+                        'meta_path': os.path.join(subfolder_path, "meta", f"{frame_id}.json")
+                    })
 
     def __len__(self):
         return len(self.data_list)
