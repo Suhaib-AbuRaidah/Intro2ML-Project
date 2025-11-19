@@ -8,24 +8,26 @@ class PointSegHead(nn.Module):
     def __init__(self, in_dim: int, num_classes: int):
         super().__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(in_dim, 256),
-            nn.LayerNorm(256),
+            nn.Conv1d(in_dim, 256, 1),
+            nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
             nn.Dropout(0.2),
             
-            nn.Linear(256, 128),
-            nn.LayerNorm(128),
+            nn.Conv1d(256, 128, 1),
+            nn.BatchNorm1d(128),
             nn.ReLU(inplace=True),
             nn.Dropout(0.2),
             
-            nn.Linear(128, num_classes)          
+            nn.Conv1d(128, num_classes, 1)
         )
 
     def forward(self, x):
-        B, N, F = x.shape
-        x = x.reshape(B * N, F)
+        # x: [B, N, F] -> [B, F, N]
+        x = x.permute(0, 2, 1)
         out = self.mlp(x)
-        return out.reshape(B, N, -1)   # class per point
+        # out: [B, C, N] -> [B, N, C]
+        return out.permute(0, 2, 1)
+
 
 class OffsetHead(nn.Module):
     def __init__(self, in_dim: int, num_keypoints: int):
@@ -33,24 +35,26 @@ class OffsetHead(nn.Module):
         self.num_keypoints = num_keypoints
 
         self.mlp = nn.Sequential(
-            nn.Linear(in_dim, 256),
-            nn.LayerNorm(256),
+            nn.Conv1d(in_dim, 256, 1),
+            nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
             nn.Dropout(0.2),
             
-            nn.Linear(256, 128),
-            nn.LayerNorm(128),
+            nn.Conv1d(256, 128, 1),
+            nn.BatchNorm1d(128),
             nn.ReLU(inplace=True),
             nn.Dropout(0.2),
-            nn.Linear(128, num_keypoints * 3)
+            nn.Conv1d(128, num_keypoints * 3, 1)
         )
 
     def forward(self, x):
-        # x: (B, N, F)
+        # x: [B, N, F]
         B, N, _ = x.shape
-        x = x.reshape(B * N, -1)      # (B*N, F)
-        out = self.mlp(x)             # (B, N, K*3)
-        return out.reshape(B, N, self.num_keypoints, 3)  # (B, N, K, 3)
+        x = x.permute(0, 2, 1)
+        out = self.mlp(x)
+        # out: [B, K*3, N] -> [B, N, K*3]
+        out = out.permute(0, 2, 1)
+        return out.reshape(B, N, self.num_keypoints, 3) # [B, N, K, 3]
     
 class TransPoseNetwork(nn.Module):
     def __init__(self, img_outdim=128,normals_outdim=64,points_outdim=256,num_classes=4, num_keypoints=10):

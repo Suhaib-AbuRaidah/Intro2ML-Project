@@ -120,7 +120,7 @@ def load_and_preprocess_input_fast(path, input_type):
     """Load image, resize, and preprocess (NO SAVING)."""
     if input_type == 'Sparse Depth':
         img = cv2.imread(path, cv2.IMREAD_UNCHANGED).astype(np.float32)
-        img = cv2.resize(img, (INPUT_W, INPUT_H), interpolation=cv2.INTER_LINEAR)
+        img = cv2.resize(img, (INPUT_W, INPUT_H), interpolation=cv2.INTER_NEAREST)
         img = img / 1000.0  # mm to meters
         img = np.clip(img, 0, 10)
         return torch.from_numpy(img).unsqueeze(0)
@@ -134,7 +134,7 @@ def load_and_preprocess_input_fast(path, input_type):
     
     elif input_type == 'Mask':
         img = cv2.imread(path, cv2.IMREAD_GRAYSCALE).astype(np.float32)
-        img = cv2.resize(img, (INPUT_W, INPUT_H), interpolation=cv2.INTER_LINEAR)
+        img = cv2.resize(img, (INPUT_W, INPUT_H), interpolation=cv2.INTER_NEAREST)
         img = img / 255.0
         return torch.from_numpy(img).unsqueeze(0)
     

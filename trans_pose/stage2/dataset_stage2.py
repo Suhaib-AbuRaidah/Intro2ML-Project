@@ -8,17 +8,19 @@ import glob
 from pathlib import Path
 
 class Stage2Dataset(Dataset):
-    def __init__(self, root_dir, keypoints_dir, camera_id='1', num_keypoints=10, transforms=None):
+    def __init__(self, root_dir, keypoints_dir, camera_id='1', num_keypoints=10, transforms=None, target_size=None):
         """
         Args:
             root_dir: Path to 'tanscg-data-2'
             keypoints_dir: Path to 'tanscg-data-2/keypoints'
             camera_id: '1' for D435.
+            target_size (tuple, optional): (width, height) to resize images to.
         """
         self.root_dir = root_dir
         self.camera_id = str(camera_id)
         self.num_keypoints = num_keypoints
         self.transforms = transforms
+        self.target_size = target_size # (W, H)
         
         # 1. Load Canonical Keypoints
         self.canonical_kpts = self._load_all_keypoints(keypoints_dir)
@@ -71,13 +73,14 @@ class Stage2Dataset(Dataset):
         print(f"Indexed {len(self.data_list)} valid samples.")
 
         # Intrinsics (D435)
+        # image is downsampled by 2 from 1280x720 to 640x360 so we modify cx, fy, cy and fx accordingly -- ghina 
         self.camera_intrisics = np.array([
-            [525.0, 0.0, 319.5],
-            [0.0, 525.0, 239.5],
+            [463.58, 0.0, 325.66],
+            [0.0, 463.69, 174.81],
             [0.0, 0.0, 1.0]
         ], dtype=np.float32)
 
-<<<<<<< HEAD
+
     def _load_all_keypoints(self, kpts_dir):
         kpts_map = {}
         if not os.path.exists(kpts_dir): return kpts_map
@@ -94,46 +97,8 @@ class Stage2Dataset(Dataset):
                 kpts_map[obj_id] = pts.astype(np.float32)
             except: pass
         return kpts_map
-=======
-        for scene_dir_name in self.scenes:
-            # Resolve the full path to the current scene directory
-            scene_path = Path(scene_dir_name)
-            
-            # 3. Find the subfolders inside the scene (e.g., '0' or '1')
-            # Use glob to find all directories one level deep inside the scene_path
-            subfolder_paths = [p for p in scene_path.iterdir() if p.is_dir()]
 
-            if not subfolder_paths:
-                # Add print here if you want to know which scenes are skipped
-                # print(f"Warning: Skipping scene {scene_path.name}. No subfolders found.")
-                continue
 
-            # Iterate through all subfolders found (e.g., '0', '1', '2'...)
-            for subfolder_path in subfolder_paths:
-                # Now search for RGB files inside the 'rgb' directory of the subfolder
-                # subfolder_path / "rgb" / "*.png"
-                rgb_files = sorted(glob.glob(os.path.join(subfolder_path, "rgb1.png")))
-                
-                if rgb_files:
-                    print(f" Found {len(rgb_files)} files in: {subfolder_path}")
-                else:
-                    print(f"Found 0 files in: {subfolder_path}")
-
-                for rgb_path_str in rgb_files:
-                    rgb_path = Path(rgb_path_str)
-                    frame_id = rgb_path.stem # Gets filename without extension (e.g., '00000')
-                    
-                    # Construct other paths relative to the subfolder_path
-                    self.data_list.append({
-                        # Store the path to the current subfolder as the scene/base for retrieval
-                        'base_path': subfolder_path, 
-                        'frame_id': frame_id,
-                        'rgb_path': rgb_path_str, # Store as string for easy os.path usage, or keep as Path
-                        'depth_path': os.path.join(subfolder_path, "depth1.png"),
-                        'mask_path': os.path.join(subfolder_path, "depth1-gt-mask.png"),
-                        'meta_path': os.path.join(subfolder_path, "meta", f"{frame_id}.json")
-                    })
->>>>>>> 30f503053634d8b5581dcb21de6bdf4cef365da4
 
     def __len__(self):
         return len(self.data_list)
@@ -148,15 +113,25 @@ class Stage2Dataset(Dataset):
         # 2. Depth (mm -> meters)
         depth = cv2.imread(item['depth_path'], cv2.IMREAD_UNCHANGED)
         depth = depth.astype(np.float32) / 1000.0
-        
+
         # 3. Mask (depth-gt-mask)
         mask = cv2.imread(item['mask_path'], cv2.IMREAD_UNCHANGED)
         if mask is None: mask = np.zeros_like(depth, dtype=np.uint8)
         
-        # 4. Normals (Computed on the fly)
+        # --- RESIZING ---
+        if self.target_size:
+            # Resize with correct interpolation
+            # For RGB, use INTER_LINEAR. For depth/mask, use INTER_NEAREST.
+            rgb = cv2.resize(rgb, self.target_size, interpolation=cv2.INTER_LINEAR)
+            depth = cv2.resize(depth, self.target_size, interpolation=cv2.INTER_NEAREST)
+            mask = cv2.resize(mask, self.target_size, interpolation=cv2.INTER_NEAREST)
+        # --- END RESIZING ---
+
+        # 4. Normals (Computed on the fly from the potentially resized depth map)
         sn = self.compute_normals(depth)
         
         # 5. Pose & Keypoints
+        # Note: Keypoints are in world coordinates, so they are not affected by image resizing.
         target_keypoints = {}
         if os.path.exists(item['pose_path']):
             try:
