@@ -8,20 +8,93 @@ import glob
 from pathlib import Path
 
 class Stage2Dataset(Dataset):
-    def __init__(self, root_dir, transforms=None):
+    def __init__(self, root_dir, keypoints_dir, camera_id='1', num_keypoints=10, transforms=None):
+        """
+        Args:
+            root_dir: Path to 'tanscg-data-2'
+            keypoints_dir: Path to 'tanscg-data-2/keypoints'
+            camera_id: '1' for D435.
+        """
         self.root_dir = root_dir
+        self.camera_id = str(camera_id)
+        self.num_keypoints = num_keypoints
         self.transforms = transforms
         
-        self.scenes = sorted(glob.glob(os.path.join(root_dir, "*")))
-        self.data_list = []
+        # 1. Load Canonical Keypoints
+        self.canonical_kpts = self._load_all_keypoints(keypoints_dir)
         
-        # fx, fy, cx, cy
+        # 2. Index Scenes
+        self.data_list = []
+        self.scenes = sorted(glob.glob(os.path.join(root_dir, "scene*")))
+        
+        print(f"Found {len(self.scenes)} scenes. Indexing D435 frames...")
+        
+        for scene_path in self.scenes:
+            meta_path = os.path.join(scene_path, "metadata.json")
+            if not os.path.exists(meta_path): continue
+                
+            with open(meta_path, 'r') as f:
+                meta = json.load(f)
+                
+            # Get valid perspective folders (e.g. 0, 1, 2...)
+            valid_folders = meta.get("D435_valid_perspective_list", [])
+            scene_objects = meta.get("model_list", [])
+            
+            for folder_num in valid_folders:
+                # The folder name is the perspective number (e.g. "0")
+                perspective_folder = os.path.join(scene_path, str(folder_num))
+                if not os.path.isdir(perspective_folder): continue
+                
+                # STRICT FILE NAMING: Always use camera_id.png (e.g. "1.png")
+                rgb_filename = f"rgb{self.camera_id}.png"
+                depth_filename = f"depth{self.camera_id}.png"
+                mask_filename = f"depth{self.camera_id}-gt-mask.png"
+                pose_filename = f"{self.camera_id}.npy"
+                
+                rgb_path = os.path.join(perspective_folder, rgb_filename)
+                depth_path = os.path.join(perspective_folder, depth_filename)
+                mask_path = os.path.join(perspective_folder, mask_filename)
+                
+                # Pose is inside a folder 'corrected_pose'
+                pose_path = os.path.join(perspective_folder, "corrected_pose", pose_filename)
+                
+                # Only add if essential files exist
+                if os.path.exists(rgb_path) and os.path.exists(depth_path):
+                    self.data_list.append({
+                        'rgb_path': rgb_path,
+                        'depth_path': depth_path,
+                        'mask_path': mask_path,
+                        'pose_path': pose_path,
+                        'model_list': scene_objects
+                    })
+        
+        print(f"Indexed {len(self.data_list)} valid samples.")
+
+        # Intrinsics (D435)
         self.camera_intrisics = np.array([
             [525.0, 0.0, 319.5],
             [0.0, 525.0, 239.5],
             [0.0, 0.0, 1.0]
         ], dtype=np.float32)
 
+<<<<<<< HEAD
+    def _load_all_keypoints(self, kpts_dir):
+        kpts_map = {}
+        if not os.path.exists(kpts_dir): return kpts_map
+        files = glob.glob(os.path.join(kpts_dir, "*.npz"))
+        for f in files:
+            try:
+                fname = os.path.basename(f)
+                obj_id = int(fname.split('-')[0])
+                data = np.load(f)
+                pts = data['points'] if 'points' in data else data[list(data.keys())[0]]
+                if len(pts) > self.num_keypoints:
+                    indices = np.linspace(0, len(pts)-1, self.num_keypoints, dtype=int)
+                    pts = pts[indices]
+                kpts_map[obj_id] = pts.astype(np.float32)
+            except: pass
+        return kpts_map
+=======
         for scene_dir_name in self.scenes:
             # Resolve the full path to the current scene directory
             scene_path = Path(scene_dir_name)
@@ -60,6 +133,7 @@ class Stage2Dataset(Dataset):
                         'mask_path': os.path.join(subfolder_path, "depth1-gt-mask.png"),
                         'meta_path': os.path.join(subfolder_path, "meta", f"{frame_id}.json")
                     })
+>>>>>>> 30f503053634d8b5581dcb21de6bdf4cef365da4
 
     def __len__(self):
         return len(self.data_list)
@@ -67,66 +141,49 @@ class Stage2Dataset(Dataset):
     def __getitem__(self, idx):
         item = self.data_list[idx]
         
-        # 1. RGB [0, 1]
+        # 1. RGB
         rgb = cv2.imread(item['rgb_path'])
-        if rgb is None:
-            raise FileNotFoundError(f"Image not found: {item['rgb_path']}")
-        rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB)
-        rgb = rgb.astype(np.float32) / 255.0
+        rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         
-        # 2. Depth (Meters)
+        # 2. Depth (mm -> meters)
         depth = cv2.imread(item['depth_path'], cv2.IMREAD_UNCHANGED)
-        if depth is None:
-            raise FileNotFoundError(f"Depth not found: {item['depth_path']}")
         depth = depth.astype(np.float32) / 1000.0
         
-        # 3. Mask
+        # 3. Mask (depth-gt-mask)
         mask = cv2.imread(item['mask_path'], cv2.IMREAD_UNCHANGED)
-        if mask is None:
-            # Fallback for missing mask: zeros
-            mask = np.zeros_like(depth, dtype=np.uint8)
+        if mask is None: mask = np.zeros_like(depth, dtype=np.uint8)
         
-        # 4. Normals
+        # 4. Normals (Computed on the fly)
         sn = self.compute_normals(depth)
         
-        # 5. Keypoints (FIXED PARSING)
-        keypoints = {}
-        if os.path.exists(item['meta_path']):
-            with open(item['meta_path'], 'r') as f:
-                meta = json.load(f)
-                # Logic: Iterate over objects in meta and extract keypoints
-                # Adjust 'objects' key based on your actual JSON structure
-                # Case A: JSON is a list of objects
-                if isinstance(meta, list):
-                    objects = meta
-                # Case B: JSON has an 'objects' key
-                elif 'objects' in meta:
-                    objects = meta['objects']
-                else:
-                    objects = []
-
-                for obj in objects:
-                    # We need 'class_id' (or 'obj_id') and 'keypoints'
-                    # Adjust keys 'class_id' and 'keypoints' to match your JSON
-                    oid = obj.get('class_id', obj.get('obj_id', None))
-                    kpts = obj.get('keypoints', obj.get('kpts', None))
-                    
-                    if oid is not None and kpts is not None:
-                        # Ensure kpts is a list of 3D points
-                        keypoints[str(oid)] = kpts
-
-        # Tensors
-        rgb_tensor = torch.from_numpy(rgb).permute(2, 0, 1).float()
-        depth_tensor = torch.from_numpy(depth).unsqueeze(0).float()
-        mask_tensor = torch.from_numpy(mask).unsqueeze(0).float()
-        sn_tensor = torch.from_numpy(sn).permute(2, 0, 1).float()
+        # 5. Pose & Keypoints
+        target_keypoints = {}
+        if os.path.exists(item['pose_path']):
+            try:
+                pose_data = np.load(item['pose_path'], allow_pickle=True)
+                poses_dict = {}
+                if isinstance(pose_data, dict): poses_dict = pose_data
+                elif pose_data.shape == (): poses_dict = pose_data.item()
+                
+                for obj_id in item['model_list']:
+                    if obj_id in poses_dict and obj_id in self.canonical_kpts:
+                        pose = poses_dict[obj_id]
+                        kpts_can = self.canonical_kpts[obj_id]
+                        
+                        # R * K.T + t
+                        t_vec = pose[:3, 3]
+                        if np.linalg.norm(t_vec) > 50.0: t_vec /= 1000.0 # mm fix
+                        
+                        kpts_world = (pose[:3, :3] @ kpts_can.T).T + t_vec
+                        target_keypoints[str(obj_id)] = kpts_world.tolist()
+            except: pass
 
         return {
-            'rgb': rgb_tensor,
-            'depth': depth_tensor,
-            'mask': mask_tensor,
-            'sn': sn_tensor,
-            'keypoints': keypoints,
+            'rgb': torch.from_numpy(rgb).permute(2, 0, 1).float(),
+            'depth': torch.from_numpy(depth).unsqueeze(0).float(),
+            'mask': torch.from_numpy(mask).unsqueeze(0).float(),
+            'sn': torch.from_numpy(sn).permute(2, 0, 1).float(),
+            'keypoints': target_keypoints,
             'intrinsics': self.camera_intrisics
         }
 
@@ -134,7 +191,6 @@ class Stage2Dataset(Dataset):
         zy, zx = np.gradient(depth)
         normal = np.dstack((-zx, -zy, np.ones_like(depth)))
         n = np.linalg.norm(normal, axis=2)
-        # Avoid div by zero
         n[n == 0] = 1.0
         normal[:, :, 0] /= n
         normal[:, :, 1] /= n
@@ -142,16 +198,10 @@ class Stage2Dataset(Dataset):
         return normal
 
 def collate_fn(batch):
-    rgb = torch.stack([item['rgb'] for item in batch])
-    depth = torch.stack([item['depth'] for item in batch])
-    mask = torch.stack([item['mask'] for item in batch])
-    sn = torch.stack([item['sn'] for item in batch])
-    keypoints = [item['keypoints'] for item in batch]
-    
     return {
-        'rgb': rgb,
-        'depth': depth,
-        'mask': mask,
-        'sn': sn,
-        'keypoints': keypoints
+        'rgb': torch.stack([item['rgb'] for item in batch]),
+        'depth': torch.stack([item['depth'] for item in batch]),
+        'mask': torch.stack([item['mask'] for item in batch]),
+        'sn': torch.stack([item['sn'] for item in batch]),
+        'keypoints': [item['keypoints'] for item in batch]
     }

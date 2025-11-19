@@ -133,20 +133,26 @@ if __name__ == "__main__":
 
     # 1. DATASETS
     # UPDATE THESE PATHS TO YOUR ACTUAL WINDOWS PATHS
+<<<<<<< HEAD
+    train_dir = r"c:\Users\user\Desktop\AUB\Intro2ML\Project\Intro2ML-Project\tanscg-data-2\train"
+    keypoints_dir = r"c:\Users\user\Desktop\AUB\Intro2ML\Project\Intro2ML-Project\tanscg-data-2\keypoints"
+=======
     train_dir = "F:/ML-Dataset/train" 
     valid_dir = "F:/ML-Dataset/valid"
+>>>>>>> 30f503053634d8b5581dcb21de6bdf4cef365da4
 
-    # Check if paths exist
-    if not os.path.exists(train_dir):
-        print(f"WARNING: Train dir {train_dir} not found. Please edit the path in training.py")
-    
-    train_dataset = Stage2Dataset(root_dir=train_dir, transforms=T.ToTensor())
+    train_dataset = Stage2Dataset(
+        root_dir=train_dir,
+        keypoints_dir=keypoints_dir,
+        transforms=T.ToTensor(),
+    )
+    valid_dir = r"c:\Users\user\Desktop\AUB\Intro2ML\Project\Intro2ML-Project\tanscg-data-2\valid"
     # If valid dir doesn't exist, use train for valid (just for testing code)
     if not os.path.exists(valid_dir):
         print("Validation dir not found, using split of train or same dataset...")
         valid_dataset = train_dataset 
     else:
-        valid_dataset = Stage2Dataset(root_dir=valid_dir, transforms=T.ToTensor())
+        valid_dataset = Stage2Dataset(root_dir=valid_dir,  keypoints_dir=keypoints_dir,transforms=T.ToTensor())
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
