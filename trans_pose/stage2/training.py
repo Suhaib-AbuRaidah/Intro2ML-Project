@@ -55,18 +55,17 @@ def run_epoch(model, dataloader, intrinsics_tuple_scaled, device, optimizer=None
     total_off = 0.0
     
     pbar = tqdm.tqdm(dataloader, desc=desc, leave=True, dynamic_ncols=True)
-    
+
     for step, data in enumerate(pbar):
         rgb = data['rgb'].to(device)
         sn = data['sn'].to(device)
         depth = data['depth'].to(device)
         o_mask = data['mask'].to(device)
         kpts_list = data['keypoints']
+        # binary_mask is no longer needed as input to the model, o_mask is used for point sampling
         
-        # --- REMOVED MANUAL TENSOR DOWNSAMPLING ---
-        
+        # --- Forward pass with o_mask for point sampling ---
         with torch.set_grad_enabled(is_train):
-            # Pass the scaled intrinsics tuple to the model
             seg_logits, offsets, points, trans_feat = model(rgb, sn, depth, o_mask, intrinsics_tuple_scaled)
             
             # --- TARGET GENERATION ---
@@ -90,7 +89,7 @@ def run_epoch(model, dataloader, intrinsics_tuple_scaled, device, optimizer=None
             grid[:, :, 0, 1] = 2.0 * v / (H - 1) - 1.0
             
             # The sampled mask is now at the TARGET_H/W resolution
-            sampled_mask = F.grid_sample(o_mask.float(), grid, mode='nearest', align_corners=True)
+            sampled_mask = F.grid_sample(o_mask.float(), grid, mode='nearest', align_corners=False) # Use align_corners=False
             point_obj_ids = sampled_mask.squeeze(-1).squeeze(1).long()
             
             gt_seg = torch.zeros((B, N), dtype=torch.long, device=device)
@@ -104,39 +103,38 @@ def run_epoch(model, dataloader, intrinsics_tuple_scaled, device, optimizer=None
                     mask_b = (point_obj_ids[b] == obj_id)
                     if mask_b.sum() == 0: continue
                     
-                    # MAPPING: Adjust if your IDs differ (e.g. 1->0)
-                    class_idx = obj_id - 1 
-                    
-                    if class_idx >= 0 and class_idx < model.seg_head.mlp[-1].out_features:
-                        gt_seg[b, mask_b] = class_idx
-                        offset_mask[b, mask_b] = True
-                        kpts_tensor = torch.tensor(kpts, device=device).float()
-                        current_points = points[b, mask_b].unsqueeze(1)
-                        target_offsets[b, mask_b] = kpts_tensor.unsqueeze(0) - current_points
+                    # The check for class_idx is removed as it was incorrect for binary segmentation.
+                    # We now calculate offsets for ANY valid object that has keypoints.
+                    offset_mask[b, mask_b] = True
+                    kpts_tensor = torch.tensor(kpts, device=device).float()
+                    current_points = points[b, mask_b].unsqueeze(1)
+                    target_offsets[b, mask_b] = kpts_tensor.unsqueeze(0) - current_points
 
             # --- LOSSES ---
-            # Use .reshape() instead of .view() to handle non-contiguous tensors from permute()
-            loss_seg = F.cross_entropy(seg_logits.reshape(-1, seg_logits.shape[-1]), gt_seg.view(-1))
+            # MODIFIED LOSS CALCULATION
+            # 1. Segmentation Loss: Binary classification (Object vs Background)
+            # Use BCEWithLogitsLoss for binary (1-channel) output. It's more stable.
+            gt_seg_binary = (point_obj_ids > 0).float() # Target should be float for BCE
+            # seg_logits is [B, N, 1], so we squeeze it. gt_seg_binary is [B, N].
+            loss_seg = F.binary_cross_entropy_with_logits(seg_logits.squeeze(-1), gt_seg_binary)
             
+            # 2. Offset Loss: Calculated ONLY on points that are ground-truth objects.
+            # This forces the offset head to learn even if the seg head is wrong.
             if offset_mask.sum() > 0:
                 loss_off = F.l1_loss(offsets[offset_mask], target_offsets[offset_mask])
             else:
                 loss_off = torch.tensor(0.0, device=device)
                 
             loss_reg = feature_transform_regularizer(trans_feat)
-            
-            loss_total = loss_seg + loss_off + 0.001 * loss_reg
-            if step == 0:
-                # --- Check Bounding Box of Projected Points ---
-                print(f"U range: [{u.min().item():.2f}, {u.max().item():.2f}] (W={W})")
-                print(f"V range: [{v.min().item():.2f}, {v.max().item():.2f}] (H={H})")
-                print(f"Z mean: {z.mean().item():.4f}")
-                
+
+            # Re-weighted loss to give importance to the offset task
+            loss_total = 1.0 * loss_seg + 1.0 * loss_off + 0.001 * loss_reg
+
+            if step == 0:                
                 # Check what percentage of points are on screen (within image bounds)
                 valid_u = torch.logical_and(u >= 0, u < W)
                 valid_v = torch.logical_and(v >= 0, v < H)
                 valid_points = torch.logical_and(valid_u, valid_v).sum().item()
-                print(f"Valid projected points (on screen): {valid_points}/{B*N}")
                             
             if is_train:
                 optimizer.zero_grad()
@@ -216,7 +214,6 @@ if __name__ == "__main__":
          "img_outdim": 128,
          "normals_outdim": 64, 
          "points_outdim": 256,
-         "num_classes": 4,     
          "num_keypoints": 10   
     }
     model = TransPoseNetwork(**params).to(device)

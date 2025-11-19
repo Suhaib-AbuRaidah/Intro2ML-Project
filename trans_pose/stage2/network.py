@@ -1,10 +1,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 from trans_pose.stage2.feature_encoding.dense_fusion import DenseFusion
 
 class PointSegHead(nn.Module):
+    # MODIFIED: This head is now for BINARY segmentation (Object vs. Background).
+    # It will output 1 logit per point.
     def __init__(self, in_dim: int, num_classes: int):
         super().__init__()
         self.mlp = nn.Sequential(
@@ -18,7 +19,8 @@ class PointSegHead(nn.Module):
             nn.ReLU(inplace=True),
             nn.Dropout(0.2),
             
-            nn.Conv1d(128, num_classes, 1)
+            # Output is 1 channel for binary classification (object vs background)
+            nn.Conv1d(128, 1, 1)
         )
 
     def forward(self, x):
@@ -26,7 +28,7 @@ class PointSegHead(nn.Module):
         x = x.permute(0, 2, 1)
         out = self.mlp(x)
         # out: [B, C, N] -> [B, N, C]
-        return out.permute(0, 2, 1)
+        return out.permute(0, 2, 1) # Shape: [B, N, 1]
 
 
 class OffsetHead(nn.Module):
@@ -57,7 +59,8 @@ class OffsetHead(nn.Module):
         return out.reshape(B, N, self.num_keypoints, 3) # [B, N, K, 3]
     
 class TransPoseNetwork(nn.Module):
-    def __init__(self, img_outdim=128,normals_outdim=64,points_outdim=256,num_classes=4, num_keypoints=10):
+    # MODIFIED: num_classes is no longer needed for the binary segmentation head.
+    def __init__(self, img_outdim=128,normals_outdim=64,points_outdim=256, num_keypoints=10, **kwargs):
         super().__init__()
         self.features = DenseFusion(image_channels=img_outdim,
                                     normal_channels=normals_outdim,
@@ -65,7 +68,7 @@ class TransPoseNetwork(nn.Module):
                                     num_samples=4096)
         
         feature_outdim = img_outdim + normals_outdim + points_outdim
-        self.seg_head = PointSegHead(feature_outdim, num_classes)
+        self.seg_head = PointSegHead(feature_outdim, num_classes=1) # num_classes=1 for binary
         self.offset_head = OffsetHead(feature_outdim, num_keypoints)
 
         self._initialize_weights()
@@ -84,10 +87,10 @@ class TransPoseNetwork(nn.Module):
                 nn.init.ones_(m.weight)
                 nn.init.zeros_(m.bias)
 
-    def forward(self, img,normals,depth_c,mask_inst,intrinsics):
+    def forward(self, img, normals, depth_c, o_mask, intrinsics): # Changed binary_mask to o_mask
         
         # points: (B, N, 3) or (B, N, feat)
-        features, points, trans_feat= self.features(img, depth_c, normals, mask_inst, intrinsics)  # (B, N, F)
+        features, points, trans_feat = self.features(img, depth_c, normals, o_mask, intrinsics)  # (B, N, F) # Changed binary_mask to o_mask
         # features=features.unsqueeze(0)
         seg_logits = self.seg_head(features)  # (B, N, C)
         offsets = self.offset_head(features)  # (B, N, K, 3)

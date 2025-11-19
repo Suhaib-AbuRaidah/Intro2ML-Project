@@ -117,7 +117,7 @@ class Stage2Dataset(Dataset):
         # 3. Mask (depth-gt-mask)
         mask = cv2.imread(item['mask_path'], cv2.IMREAD_UNCHANGED)
         if mask is None: mask = np.zeros_like(depth, dtype=np.uint8)
-        
+
         # --- RESIZING ---
         if self.target_size:
             # Resize with correct interpolation

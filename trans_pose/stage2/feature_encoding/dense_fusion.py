@@ -51,7 +51,7 @@ class DenseFusion(nn.Module):
         rgb: torch.Tensor,
         depth_c: torch.Tensor,
         normals: torch.Tensor,
-        mask_inst: torch.Tensor,
+        o_mask: torch.Tensor,    # This is the instance mask
         intrinsics: Tuple[float, float, float, float],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
@@ -59,7 +59,7 @@ class DenseFusion(nn.Module):
             rgb: [B, 3, H, W]
             depth_c: [B, 1, H, W]
             normals: [B, 3, H, W]
-            mask_inst: [B, 1, H, W]
+            o_mask: [B, 1, H, W] (instance mask with object IDs)
             intrinsics: (fx, fy, cx, cy)
         Returns:
             fused_features: [B, N, total_dim]
@@ -70,7 +70,7 @@ class DenseFusion(nn.Module):
             rgb = rgb.unsqueeze(0)
             depth_c = depth_c.unsqueeze(0)
             normals = normals.unsqueeze(0)
-            mask_inst = mask_inst.unsqueeze(0)
+            o_mask = o_mask.unsqueeze(0) # Changed binary_mask to o_mask
 
         # encode 2D images (vectorized over batch)
         feats_rgb = self.image_encoder(rgb)        # [B, 128, H/4, W/4]
@@ -87,8 +87,8 @@ class DenseFusion(nn.Module):
         for i in range(B):
             # build instance points hanfles [1, H, W] inputs 
             points_xyz, uv = build_instance_points(
-                depth_c=depth_c[i:i+1],
-                mask_inst=mask_inst[i:i+1],
+                depth_c=depth_c[i:i+1], # This is fine
+                mask_inst=o_mask[i:i+1], # Pass the instance mask here
                 intrinsics=intrinsics,
                 num_samples=self.num_samples,
             )  # points_xyz: [N, 3], uv: [N, 2]
