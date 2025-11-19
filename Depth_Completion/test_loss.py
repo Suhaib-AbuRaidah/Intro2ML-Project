@@ -1,16 +1,25 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import os
+import cv2 
+from typing import Tuple, List, Dict
+import matplotlib.pyplot as plt
 
-# Define the expected input size constants from your model file
-INPUT_H, INPUT_W = 360, 640
-NUM_INPUT_CHANNELS = 6 # Sparse Depth (1), Normals (3), Mask (1), Boundaries (1)
+# --- 1. CONFIGURATION ---
+CHECKPOINT_PATH = "checkpoints/best.pth" 
+TEST_INDEX_FILE = "test.txt" # The file containing your data paths (comma-separated)
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"INFO: Using device: {DEVICE}")
 
-# --- 1. MODEL DEFINITION (DepthCompletionNet) ---
-# Your model needs to be defined here so the script can instantiate and load weights.
+# Input parameters from your model
+IN_CHANNELS = 6
+BASE_CHANNELS = 32
+INPUT_H, INPUT_W = 360, 640 
+BATCH_SIZE = 4 
+
+# --- 2. MODEL DEFINITION (UNMODIFIED) ---
 
 class ConvBlock(nn.Module):
     """Conv -> BatchNorm -> ReLU"""
@@ -24,31 +33,28 @@ class ConvBlock(nn.Module):
         return self.relu(self.bn(self.conv(x)))
 
 class DepthCompletionNet(nn.Module):
-    """Depth Completion model for 6-channel input -> 1-channel depth output"""
-    def __init__(self, input_channels=NUM_INPUT_CHANNELS, base_channels=32):
+    """Depth Completion Network Architecture."""
+    def __init__(self, input_channels=6, base_channels=32):
         super(DepthCompletionNet, self).__init__()
         
-        # Encoder (compress)
         self.enc = nn.Sequential(
             ConvBlock(input_channels, base_channels, 3, 1, 1),
-            ConvBlock(base_channels, base_channels * 2, 3, 2, 1),  # /2
-            ConvBlock(base_channels * 2, base_channels * 4, 3, 2, 1),  # /4
+            ConvBlock(base_channels, base_channels * 2, 3, 2, 1),
+            ConvBlock(base_channels * 2, base_channels * 4, 3, 2, 1),
         )
         
-        # Bottleneck
         self.bottleneck = nn.Sequential(
             ConvBlock(base_channels * 4, base_channels * 8, 3, 1, 1),
             ConvBlock(base_channels * 8, base_channels * 4, 3, 1, 1),
         )
         
-        # Decoder (decompress)
         self.dec = nn.Sequential(
-            nn.ConvTranspose2d(base_channels * 4, base_channels * 2, 4, 2, 1),  # x2
+            nn.ConvTranspose2d(base_channels * 4, base_channels * 2, 4, 2, 1),
             ConvBlock(base_channels * 2, base_channels * 2, 3, 1, 1),
-            nn.ConvTranspose2d(base_channels * 2, base_channels, 4, 2, 1),  # x2
+            nn.ConvTranspose2d(base_channels * 2, base_channels, 4, 2, 1),
             ConvBlock(base_channels, base_channels, 3, 1, 1),
             nn.Conv2d(base_channels, 1, 1),
-            nn.ReLU() # Output depth must be non-negative
+            nn.ReLU()
         )
 
     def forward(self, x):
@@ -57,177 +63,287 @@ class DepthCompletionNet(nn.Module):
         out = self.dec(bottleneck)
         return out
 
-# --- 2. PLACEHOLDER DATASET AND LOADER ---
+# --- 3. DATA LOADING AND PREPROCESSING HELPERS (UNMODIFIED) ---
 
-class MockDepthDataset(Dataset):
-    """
-    Generates mock data matching the expected format for your Depth Completion model:
-    6-channel input and 1-channel Ground Truth Depth.
-    """
-    def __init__(self, num_samples=100):
-        self.num_samples = num_samples
-        # Simulated 6-channel input: (N, 6, H, W)
-        self.inputs = torch.randn(num_samples, NUM_INPUT_CHANNELS, INPUT_H, INPUT_W, dtype=torch.float32)
-        # Simulated Ground Truth Full Depth: (N, 1, H, W). Values between 0.1 and 10 meters.
-        self.gt_depth = torch.rand(num_samples, 1, INPUT_H, INPUT_W, dtype=torch.float32) * 9.9 + 0.1
-        # Simulated Mask: Pixels where GT depth is valid (e.g., > 0).
-        self.mask = (self.gt_depth > 0.05).float() # Simple non-zero mask
+def load_and_preprocess_input_fast(path: str, input_type: str) -> torch.Tensor:
+    """Load image, resize, and preprocess (Sparse Depth, Normals, or Mask)."""
+    if input_type == 'Sparse Depth' or input_type == 'GT Depth':
+        img = cv2.imread(path, cv2.IMREAD_UNCHANGED).astype(np.float32)
+        interpolation = cv2.INTER_NEAREST if input_type == 'GT Depth' else cv2.INTER_LINEAR
+        img = cv2.resize(img, (INPUT_W, INPUT_H), interpolation=interpolation)
+        img = img / 1000.0  # mm to meters
+        img = np.clip(img, 0, 10)
+        return torch.from_numpy(img).unsqueeze(0)
+    
+    elif input_type == 'Normals':
+        img = cv2.imread(path, cv2.IMREAD_COLOR)
+        if img is None:
+             raise FileNotFoundError(f"Normals image not found: {path}")
+        img = cv2.resize(img, (INPUT_W, INPUT_H), interpolation=cv2.INTER_LINEAR)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+        img = 2.0 * img - 1.0 # Normalize to [-1, 1]
+        return torch.from_numpy(img.transpose(2, 0, 1))
+    
+    elif input_type == 'Mask':
+        img = cv2.imread(path, cv2.IMREAD_GRAYSCALE).astype(np.float32)
+        if img is None:
+             raise FileNotFoundError(f"Mask image not found: {path}")
+        img = cv2.resize(img, (INPUT_W, INPUT_H), interpolation=cv2.INTER_LINEAR)
+        img = img / 255.0
+        return torch.from_numpy(img).unsqueeze(0)
+    
+    else:
+        raise ValueError(f"Unknown input type: {input_type}")
 
+def extract_boundaries_from_rgb(rgb_path: str) -> torch.Tensor:
+    """Extract boundaries from RGB using Canny edge detection."""
+    img = cv2.imread(rgb_path, cv2.IMREAD_COLOR)
+    if img is None:
+        raise FileNotFoundError(f"RGB image not found: {rgb_path}")
+    
+    img = cv2.resize(img, (INPUT_W, INPUT_H), interpolation=cv2.INTER_LINEAR)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    
+    # Canny edge detection
+    edges = cv2.Canny(gray, 50, 150)
+    edges = edges.astype(np.float32) / 255.0
+    return torch.from_numpy(edges).unsqueeze(0)
+
+def load_input_and_target(paths: List[str]) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Loads all 5 files, stacks the 4 inputs, and separates the target GT depth."""
+    sparse_depth_path, normals_path, mask_path, rgb_path, gt_depth_path = paths
+    
+    # 4 Input Channels: D, N, M, B
+    d = load_and_preprocess_input_fast(sparse_depth_path, 'Sparse Depth') # 1 channel
+    n = load_and_preprocess_input_fast(normals_path, 'Normals')          # 3 channels
+    m = load_and_preprocess_input_fast(mask_path, 'Mask')                # 1 channel
+    b = extract_boundaries_from_rgb(rgb_path)                            # 1 channel
+    
+    # Stack inputs (1 + 3 + 1 + 1 = 6 channels)
+    stacked_input = torch.cat([d, n, m, b], dim=0) # Shape: (6, H, W)
+
+    # Ground Truth Target (Y)
+    gt_depth = load_and_preprocess_input_fast(gt_depth_path, 'GT Depth') # Shape: (1, H, W)
+
+    return stacked_input, gt_depth
+
+def load_sample_paths_from_file(index_file: str) -> List[List[str]]:
+    """Reads the index file and returns a list of path lists, using comma as delimiter."""
+    print(f"INFO: Reading sample paths from {index_file}...")
+    paths_list = []
+    try:
+        with open(index_file, 'r') as f:
+            for line in f:
+                # Use comma (,) as the delimiter for splitting paths
+                paths = [p.strip() for p in line.strip().split(',')]
+                paths = [p for p in paths if p] 
+
+                if len(paths) == 5:
+                    paths_list.append(paths)
+                else:
+                    print(f"WARNING: Skipping line with incorrect number of paths ({len(paths)}) or invalid format: {line.strip()}")
+        
+        if not paths_list:
+            raise ValueError(f"Index file '{index_file}' is empty or improperly formatted.")
+        return paths_list
+    except FileNotFoundError:
+        print(f"FATAL: The file '{index_file}' was not found. Please ensure it exists.")
+        exit()
+
+# --- 4. DATASET DEFINITION (UNMODIFIED) ---
+class PathTestDataset(Dataset):
+    """Dataset that loads data on the fly based on file paths."""
+    def __init__(self, path_list: List[List[str]]):
+        self.path_list = path_list
+        
     def __len__(self):
-        return self.num_samples
+        return len(self.path_list)
 
     def __getitem__(self, idx):
-        # Returns: Stacked Input, Ground Truth Depth, Validity Mask
-        return self.inputs[idx], self.gt_depth[idx], self.mask[idx]
+        # paths is a list of 5 strings: [sparse_depth, normals, mask, rgb, gt_depth]
+        paths = self.path_list[idx]
+        
+        try:
+            X, Y = load_input_and_target(paths)
+            return X, Y
+        except Exception as e:
+            print(f"ERROR: Failed to load sample at index {idx} with paths: {paths}. Error: {e}")
+            return torch.zeros(IN_CHANNELS, INPUT_H, INPUT_W), torch.zeros(1, INPUT_H, INPUT_W)
 
-# --- 3. REGRESSION METRICS FOR DEPTH COMPLETION ---
+# --- 5. UTILITY FUNCTIONS ---
 
-def compute_depth_errors(y_true, y_pred, mask):
+def calculate_threshold_metrics(pred: torch.Tensor, target: torch.Tensor) -> Tuple[float, float, float, int]:
     """
-    Calculates standard depth completion metrics over valid pixels (mask=1).
-
-    Args:
-        y_true (np.array): Flattened Ground truth depth map (valid pixels).
-        y_pred (np.array): Flattened Predicted depth map (valid pixels).
-        mask (np.array): Flattened Validity mask (Boolean array for valid pixels).
+    Calculates the 1.25^t threshold accuracy metrics on valid ground truth pixels.
     
-    Returns:
-        dict: A dictionary containing 'rmse', 'mae', 'delta1', 'delta2', 'delta3'.
+    Returns: (acc1, acc2, acc3, N_valid)
+        acc1/2/3: Number of pixels satisfying the threshold.
+        N_valid: Total number of valid pixels in the batch.
     """
-    # Filter arrays to include only valid pixels defined by the mask
-    y_true_valid = y_true[mask]
-    y_pred_valid = y_pred[mask]
+    # Create mask for valid ground truth pixels (D_GT > 0)
+    mask = target > 0
     
-    if y_true_valid.size == 0:
-        print("Warning: No valid pixels found for evaluation. Returning NaN metrics.")
-        return {'rmse': np.nan, 'mae': np.nan, 'delta1': np.nan, 'delta2': np.nan, 'delta3': np.nan}
+    # Apply mask to predictions and targets
+    target_valid = target[mask]
+    pred_valid = pred[mask]
+    
+    if target_valid.numel() == 0:
+        return 0.0, 0.0, 0.0, 0 # Return zero if no valid pixels
 
-    # 1. Error calculation: Difference and Squared Difference
-    diff = np.abs(y_true_valid - y_pred_valid)
+    # Calculate the ratio: max(D_hat / D_GT, D_GT / D_hat)
+    # The minimum value this can take is 1.0 (perfect match).
+    ratio = torch.max(pred_valid / target_valid, target_valid / pred_valid)
     
-    # 2. MAE (Mean Absolute Error)
-    mae = np.mean(diff)
+    # 1.25^1 accuracy (delta < 1.25)
+    acc1_count = torch.sum(ratio < 1.25).item()
     
-    # 3. RMSE (Root Mean Squared Error)
-    rmse = np.sqrt(np.mean(diff ** 2))
+    # 1.25^2 accuracy (delta < 1.5625)
+    acc2_count = torch.sum(ratio < 1.25**2).item()
     
-    # 4. Accuracy Thresholds (Delta N)
-    # The percentage of pixels where max(pred/true, true/pred) < threshold
-    # Note: Use a small epsilon to avoid division by zero if mask is imperfect
-    epsilon = 1e-6
-    ratio = np.maximum(
-        y_pred_valid / (y_true_valid + epsilon), 
-        y_true_valid / (y_pred_valid + epsilon)
-    )
+    # 1.25^3 accuracy (delta < 1.953125)
+    acc3_count = torch.sum(ratio < 1.25**3).item()
     
-    # Thresholds: 1.25^1, 1.25^2, 1.25^3
-    delta1 = np.mean(ratio < 1.25) * 100
-    delta2 = np.mean(ratio < 1.25**2) * 100
-    delta3 = np.mean(ratio < 1.25**3) * 100
+    N_valid = target_valid.numel()
     
-    return {
-        'rmse': rmse, 
-        'mae': mae, 
-        'delta1': delta1, 
-        'delta2': delta2, 
-        'delta3': delta3
+    return acc1_count, acc2_count, acc3_count, N_valid
+
+def plot_batch_loss(batch_losses: List[float], total_avg_loss: float):
+    """Plots the loss for each batch evaluated."""
+    plt.figure(figsize=(12, 6))
+    plt.plot(batch_losses, marker='.', linestyle='-', color='#3b82f6', label='Batch Mean Loss')
+    
+    # Add the overall average loss as a horizontal line
+    plt.axhline(total_avg_loss, color='red', linestyle='--', label=f'Overall Average Loss ({total_avg_loss:.4f})')
+    
+    plt.title('Test Set Loss per Batch (Mean MSE)', fontsize=16)
+    plt.xlabel(f'Batch Index (Batch Size = {BATCH_SIZE})', fontsize=12)
+    plt.ylabel('Loss (Mean MSE)', fontsize=12)
+    plt.legend()
+    plt.grid(True, linestyle=':', alpha=0.6)
+    plt.show()
+    print("\nINFO: Test Loss Plot displayed.")
+
+
+# --- 6. MAIN EVALUATION FUNCTION (MODIFIED) ---
+
+MetricResults = Dict[str, float]
+
+@torch.no_grad()
+def calculate_test_metrics(model: nn.Module, test_loader: DataLoader, criterion: nn.Module) -> Tuple[MetricResults, List[float]]:
+    """
+    Runs the evaluation loop, calculating MSE loss and Threshold Accuracy metrics.
+    """
+    model.eval() 
+    total_sum_squared_error = 0.0 # Tracks the *sum* of errors, not the mean
+    total_valid_pixels = 0
+    total_acc1, total_acc2, total_acc3 = 0, 0, 0
+    batch_losses_mean = [] # Stores the MEAN MSE for each batch
+    
+    print("\nINFO: Starting comprehensive evaluation loop...")
+
+    for i, (inputs, targets) in enumerate(test_loader):
+        print(f"  > Processing Batch {i+1}/{len(test_loader)}...", end='\r')
+        inputs = inputs.to(DEVICE)
+        targets = targets.to(DEVICE)
+
+        # Forward pass (prediction)
+        outputs = model(inputs)
+        
+        # --- 1. Calculate Loss (MSE) ---
+        mask = targets > 0
+        
+        # Loss contains individual squared errors for each valid pixel
+        pixel_losses = criterion(outputs[mask], targets[mask]) 
+        
+        # Get the number of valid pixels in this batch
+        N_valid_batch = mask.sum().item()
+        
+        if N_valid_batch == 0:
+            continue
+            
+        # Calculate the Mean MSE for the current batch
+        batch_mean_loss = pixel_losses.mean().item()
+        batch_losses_mean.append(batch_mean_loss)
+
+        # Accumulate the *sum* of all squared errors for the overall average calculation
+        total_sum_squared_error += pixel_losses.sum().item() 
+        total_valid_pixels += N_valid_batch
+        
+        # --- 2. Calculate Threshold Metrics (Accuracy/Precision) ---
+        acc1, acc2, acc3, _ = calculate_threshold_metrics(outputs, targets)
+        
+        total_acc1 += acc1
+        total_acc2 += acc2
+        total_acc3 += acc3
+
+    # Calculate final averages/percentages
+    
+    # The final average MSE is the total sum of errors divided by the total number of pixels
+    final_avg_mse = total_sum_squared_error / total_valid_pixels if total_valid_pixels > 0 else 0.0
+
+    # Calculate percentages for threshold metrics
+    if total_valid_pixels > 0:
+        final_acc1 = (total_acc1 / total_valid_pixels) * 100.0
+        final_acc2 = (total_acc2 / total_valid_pixels) * 100.0
+        final_acc3 = (total_acc3 / total_valid_pixels) * 100.0
+    else:
+        final_acc1, final_acc2, final_acc3 = 0.0, 0.0, 0.0
+        
+    results: MetricResults = {
+        'avg_mse': final_avg_mse,
+        'acc_delta_1.25': final_acc1,
+        'acc_delta_1.25^2': final_acc2,
+        'acc_delta_1.25^3': final_acc3,
     }
-
-# --- 4. MAIN EVALUATION FUNCTION ---
-def evaluate_test_set_regression(model_path, test_loader, device):
-    """
-    Loads the Depth Completion model, performs inference, and calculates
-    standard regression metrics (RMSE, MAE, Delta Accuracies).
-    """
     
-    # Initialize the model and load weights
-    model = DepthCompletionNet(input_channels=NUM_INPUT_CHANNELS, base_channels=32).to(device)
-    
-    # Load weights
-    try:
-        # Attempt to load the state dict from the standard 'model_state' key
-        checkpoint = torch.load(model_path, map_location=device)
-        if 'model_state' in checkpoint:
-            model.load_state_dict(checkpoint['model_state'])
-        else:
-            # Assume the file only contains the state_dict directly
-            model.load_state_dict(checkpoint)
-        print(f"Successfully loaded model weights from {model_path}.")
-    except Exception as e:
-        print(f"ERROR: Could not load model weights from {model_path}. Please check file path and content.")
-        print(f"Details: {e}")
-        return
-
-    model.eval()
-    
-    all_preds = []
-    all_labels = []
-    all_masks = []
-
-    print(f"Starting evaluation on device: {device}. Evaluating {len(test_loader.dataset)} samples...")
-    
-    with torch.no_grad():
-        for inputs, gt_depth, mask in test_loader:
-            inputs = inputs.to(device)
-            gt_depth = gt_depth.to(device)
-            mask = mask.to(device)
-            
-            # Forward pass: Output is the completed depth map
-            predicted_depth = model(inputs)
-            
-            # Flatten and store results for metric calculation
-            all_preds.extend(predicted_depth.cpu().numpy().flatten())
-            all_labels.extend(gt_depth.cpu().numpy().flatten())
-            all_masks.extend(mask.cpu().numpy().flatten())
-
-    # Convert lists to NumPy arrays
-    y_true_flat = np.array(all_labels)
-    y_pred_flat = np.array(all_preds)
-    mask_flat = np.array(all_masks).astype(bool) # Convert mask to boolean for indexing
-
-    # --- METRICS CALCULATION ---
-    metrics = compute_depth_errors(y_true_flat, y_pred_flat, mask_flat)
-    
-    print("\n" + "="*70)
-    print("      Depth Completion Regression Evaluation Results")
-    print("="*70)
-    print(f"Total Images Evaluated: {len(test_loader.dataset)}")
-    print(f"Total Valid Pixels Evaluated: {np.sum(mask_flat):,}")
-    print("-" * 70)
-    print(f"1. RMSE (Root Mean Squared Error): {metrics['rmse']:.4f} m")
-    print(f"2. MAE (Mean Absolute Error): {metrics['mae']:.4f} m")
-    print("-" * 70)
-    print("3. Threshold Accuracy ($\delta$): Percentage of pixels where max(pred/true, true/pred) < threshold")
-    print(f"   $\delta < 1.25^1$ (Delta 1): {metrics['delta1']:.2f}%")
-    print(f"   $\delta < 1.25^2$ (Delta 2): {metrics['delta2']:.2f}%")
-    print(f"   $\delta < 1.25^3$ (Delta 3): {metrics['delta3']:.2f}%")
-    print("="*70)
-
+    return results, batch_losses_mean
 
 if __name__ == "__main__":
-    # --- Configuration ---
-    MODEL_PATH = 'best.pth' 
-    # Adjust BATCH_SIZE based on your GPU memory
-    BATCH_SIZE = 4 
-    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    # --- Data Setup (Replace with your actual data loading) ---
-    # NOTE: You MUST replace MockDepthDataset and DataLoader with your real dataset and loader
-    test_dataset = MockDepthDataset(num_samples=200)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    # --- A. Setup and Data Loading ---
+    path_list = load_sample_paths_from_file(TEST_INDEX_FILE)
+    test_dataset = PathTestDataset(path_list)
+    # NOTE: Set shuffle=False for reproducible metric evaluation
+    test_dataloader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    
+    # --- B. Initialize Model and Load Checkpoint ---
+    model = DepthCompletionNet(input_channels=IN_CHANNELS, base_channels=BASE_CHANNELS).to(DEVICE)
+        
+    print(f"INFO: Loading model checkpoint from {CHECKPOINT_PATH}...")
     
     try:
-        # Simple check to allow the script to run even without a real model file
-        if not os.path.exists(MODEL_PATH):
-            dummy_model = DepthCompletionNet(input_channels=NUM_INPUT_CHANNELS)
-            torch.save({'model_state': dummy_model.state_dict()}, MODEL_PATH)
-            print(f"NOTE: Created a dummy model file '{MODEL_PATH}'. REPLACE THIS with your actual checkpoint!")
-            
-        evaluate_test_set_regression(MODEL_PATH, test_loader, DEVICE)
+        checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE)
+        model.load_state_dict(checkpoint['model_state']) 
+        print("SUCCESS: Model weights loaded successfully!")
+    except KeyError:
+        print("\nERROR: Found the file, but could not find the 'model_state' key inside it. Please check the checkpoint file contents.")
+        exit()
+    except RuntimeError as e:
+        print(f"\nFATAL RUNTIME ERROR: Mismatch occurred during weight loading: {e}")
+        print("ACTION: Double-check the model architecture (DepthCompletionNet) and its parameters (e.g., `base_channels`).")
+        exit()
         
-    except FileNotFoundError:
-        print(f"\nERROR: Model file '{MODEL_PATH}' not found. Please ensure it exists.")
-    except Exception as e:
-        print(f"\nAn unexpected error occurred during evaluation: {e}")
-        
-# To run this script, you need: pip install torch numpy
+    # Define the loss function (MSE is used for the loss tracking)
+    criterion = nn.MSELoss(reduction='none') # Use reduction='none' for manual masking
+
+    # --- C. Calculate Metrics ---
+    metrics, batch_losses = calculate_test_metrics(model, test_dataloader, criterion)
+
+    # --- D. Final Output and Plotting ---
+    print("\n---------------------------------------------------------")
+    print(f"Total samples evaluated: {len(test_dataset)}")
+    print("--- DEPTH COMPLETION METRICS (Calculated on Valid Pixels) ---")
+    
+    # Print Loss (MSE)
+    print(f"Average Test Loss (MSE): {metrics['avg_mse']:.6f}")
+    print(f"Average Test Loss (RMSE): {np.sqrt(metrics['avg_mse']):.6f} (Root Mean Squared Error)")
+    
+    # Print Threshold Metrics
+    print("\nThreshold Accuracy (Often referred to as Accuracy/Precision in papers):")
+    print(f"  Delta < 1.25   (Acc1): {metrics['acc_delta_1.25']:.2f}%")
+    print(f"  Delta < 1.25^2 (Acc2): {metrics['acc_delta_1.25^2']:.2f}%")
+    print(f"  Delta < 1.25^3 (Acc3): {metrics['acc_delta_1.25^3']:.2f}%")
+    print("---------------------------------------------------------")
+    
+    # Plot the results
+    plot_batch_loss(batch_losses, metrics['avg_mse'])

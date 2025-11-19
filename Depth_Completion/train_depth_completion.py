@@ -119,7 +119,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=20, help="Epochs")
     parser.add_argument("--batch", type=int, default=8, help="Batch size")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--out_dir", default="checkpoints", help="Output dir")
+    parser.add_argument("--out_dir", default="checkpoints_2", help="Output dir")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--amp", action="store_true", help="Use AMP")
     parser.add_argument("--lambda_smooth", type=float, default=1e-3, help="Smoothness weight")

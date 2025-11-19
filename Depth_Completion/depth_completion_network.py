@@ -4,6 +4,8 @@ import torch.nn.functional as F
 import cv2
 import numpy as np
 import os
+import json
+import matplotlib.pyplot as plt # Added for plotting utility
 
 INPUT_H, INPUT_W = 360, 640
 NUM_INPUT_CHANNELS = 6 
@@ -20,8 +22,11 @@ class ConvBlock(nn.Module):
         return self.relu(self.bn(self.conv(x)))
 
 class DepthCompletionNet(nn.Module):
-    """Simple model: 1 encoder + 1 decoder (FAST)"""
-    def __init__(self, input_channels=6, base_channels=32):
+    """
+    Simple model: 1 encoder + 1 decoder (FAST)
+    Includes Dropout regularization to combat overfitting.
+    """
+    def __init__(self, input_channels=6, base_channels=16, dropout_rate=0.3):
         super(DepthCompletionNet, self).__init__()
         
         # Encoder (compress)
@@ -30,6 +35,9 @@ class DepthCompletionNet(nn.Module):
             ConvBlock(base_channels, base_channels * 2, 3, 2, 1),  # /2
             ConvBlock(base_channels * 2, base_channels * 4, 3, 2, 1),  # /4
         )
+
+        # REGULARIZATION: Dropout applied to the feature maps from the encoder
+        self.encoder_dropout = nn.Dropout2d(dropout_rate)
         
         # Bottleneck
         self.bottleneck = nn.Sequential(
@@ -49,14 +57,67 @@ class DepthCompletionNet(nn.Module):
 
     def forward(self, x):
         enc = self.enc(x)
+        enc = self.encoder_dropout(enc) # Apply dropout here
         bottleneck = self.bottleneck(enc)
         out = self.dec(bottleneck)
         return out
 
+# --- Utility Class for Saving Loss Data ---
+
+class LossTracker:
+    """
+    A utility class to record, save, and plot loss history during training.
+    """
+    def __init__(self):
+        self.history = {
+            'epoch': [],
+            'train_loss': [],
+            'val_loss': []
+        }
+
+    def record_epoch(self, epoch, train_loss, val_loss):
+        """Records the loss values for a completed epoch."""
+        self.history['epoch'].append(epoch)
+        self.history['train_loss'].append(train_loss)
+        self.history['val_loss'].append(val_loss)
+        print(f"Loss Recorded - Epoch {epoch}: Train Loss={train_loss:.4f}, Val Loss={val_loss:.4f}")
+
+    def save_to_json(self, filepath='loss_history.json'):
+        """Saves the loss history to a JSON file."""
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(self.history, f, indent=4)
+            print(f"Loss history successfully saved to {filepath}")
+        except Exception as e:
+            print(f"Error saving loss history to JSON: {e}")
+
+    def plot_history(self, filename='loss_plot.png'):
+        """Generates and saves a plot of the training and validation loss."""
+        if not self.history['epoch']:
+            print("No loss data recorded to plot.")
+            return
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(self.history['epoch'], self.history['train_loss'], label='Training Loss', marker='o')
+        plt.plot(self.history['epoch'], self.history['val_loss'], label='Validation Loss', marker='o')
+        
+        plt.title('Training and Validation Loss Over Epochs')
+        plt.xlabel('Epoch')
+        plt.ylabel('Loss (e.g., MSE)')
+        plt.legend()
+        plt.grid(True)
+        
+        try:
+            plt.savefig(filename)
+            print(f"Loss plot saved to {filename}")
+        except Exception as e:
+            print(f"Error saving loss plot: {e}")
+        plt.close() # Close the figure to free memory
+
 # --- Preprocessing: Load and resize on-the-fly ---
 
 def load_and_preprocess_input_fast(path, input_type):
-    """Load image, resize to 720x1280, and preprocess (NO SAVING)."""
+    """Load image, resize, and preprocess (NO SAVING)."""
     if input_type == 'Sparse Depth':
         img = cv2.imread(path, cv2.IMREAD_UNCHANGED).astype(np.float32)
         img = cv2.resize(img, (INPUT_W, INPUT_H), interpolation=cv2.INTER_LINEAR)
