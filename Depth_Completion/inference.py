@@ -219,10 +219,10 @@ if __name__ == '__main__':
     
     # 2. INPUT PATHS: Replace these with the actual paths to your test images
     # Example data (replace with your file names)
-    SPARSE_DEPTH_PATH = "F:/ML-Dataset/transcg-data-9/transcg/scene81/0/depth1.png"
-    NORMALS_PATH = "F:/ML-Dataset/transcg-data-9/transcg/scene81/0/depth1-gt-sn.png"
-    MASK_PATH = "F:/ML-Dataset/transcg-data-9/transcg/scene81/0/depth1-gt-mask.png"
-    RGB_PATH = "F:/ML-Dataset/transcg-data-9/transcg/scene81/0/rgb1.png"
+    SPARSE_DEPTH_PATH = "F:/ML-Dataset/transcg-data-9/transcg/scene81/9/depth1.png"
+    NORMALS_PATH = "F:/ML-Dataset/transcg-data-9/transcg/scene81/9/depth1-gt-sn.png"
+    MASK_PATH = "F:/ML-Dataset/transcg-data-9/transcg/scene81/9/depth1-gt-mask.png"
+    RGB_PATH = "F:/ML-Dataset/transcg-data-9/transcg/scene81/9/rgb1.png"
 
     # Run the inference function
     run_inference(
