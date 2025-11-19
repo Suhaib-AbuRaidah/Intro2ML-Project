@@ -133,8 +133,8 @@ if __name__ == "__main__":
 
     # 1. DATASETS
     # UPDATE THESE PATHS TO YOUR ACTUAL WINDOWS PATHS
-    train_dir = "c:/Users/user/Desktop/AUB/Intro2ML/Project/data/train" 
-    valid_dir = "c:/Users/user/Desktop/AUB/Intro2ML/Project/data/valid"
+    train_dir = "F:/ML-Dataset/train" 
+    valid_dir = "F:/ML-Dataset/valid"
 
     # Check if paths exist
     if not os.path.exists(train_dir):
