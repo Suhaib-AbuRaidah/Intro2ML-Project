@@ -61,9 +61,9 @@ class DenseFusion(nn.Module):
             normals = normals.unsqueeze(0)
             mask_inst = mask_inst.unsqueeze(0)
         
-        # batch_size=1
-        if rgb.shape[0] != 1:
-            raise NotImplementedError("Batch size > 1 not yet supported. Process samples individually.")
+        # # batch_size=1
+        # if rgb.shape[0] != 1:
+        #     raise NotImplementedError("Batch size > 1 not yet supported. Process samples individually.")
         
         # Remove batch dimension for processing
         rgb = rgb.squeeze(0)

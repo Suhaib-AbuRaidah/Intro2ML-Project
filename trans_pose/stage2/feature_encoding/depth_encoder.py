@@ -37,7 +37,10 @@ def build_instance_points(
         return dummy_xyz, dummy_uv
         
     if valid_indices.shape[0] > num_samples:
-        sampled_idx = torch.randperm(valid_indices.shape[0], device=device)[:num_samples]
+        if torch.onnx.is_in_onnx_export():
+            sampled_idx = torch.arange(valid_indices.shape[0], device=device)[:num_samples]
+        else:
+            sampled_idx = torch.randperm(valid_indices.shape[0], device=device)[:num_samples]
         valid_indices = valid_indices[sampled_idx]
     
     v = valid_indices[:, 0]
