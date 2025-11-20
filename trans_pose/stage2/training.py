@@ -14,7 +14,7 @@ from trans_pose.stage2.dataset_stage2 import Stage2Dataset, collate_fn
 from trans_pose.stage2.network import TransPoseNetwork
 
 # --- CONFIGURATION ---
-BATCH_SIZE = 8
+BATCH_SIZE = 16
 LEARNING_RATE = 1e-3
 EPOCHS = 20
 NUM_WORKERS = 0
@@ -26,7 +26,11 @@ TARGET_W = 640
 WEIGHT_DECAY = 1e-4
 LR_DECAY_STEP = 10
 LR_DECAY_GAMMA = 0.5
+
 SAVE_DIR = "checkpoints"
+TRAIN_LOSS_LOG_FILE = os.path.join(SAVE_DIR, "train_epoch_losses.txt")
+VAL_LOSS_LOG_FILE = os.path.join(SAVE_DIR, "val_epoch_losses.txt")
+
 RESUME = True
 # ---------------------
 
@@ -238,6 +242,12 @@ if __name__ == "__main__":
         
         print(f"Summary Ep {epoch+1}: Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
         
+        # --- Log epoch losses to files ---
+        with open(TRAIN_LOSS_LOG_FILE, 'a') as f:
+            f.write(f"{train_loss:.6f}\n")
+        with open(VAL_LOSS_LOG_FILE, 'a') as f:
+            f.write(f"{val_loss:.6f}\n")
+
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': model.state_dict(),

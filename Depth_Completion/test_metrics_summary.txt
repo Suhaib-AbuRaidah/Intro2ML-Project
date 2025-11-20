@@ -1,0 +1,7 @@
+--- DEPTH COMPLETION TEST METRICS ---
+
+avg_mse: 0.012782
+acc_delta_1.25: 96.86%
+acc_delta_1.25^2: 99.37%
+acc_delta_1.25^3: 99.83%
+avg_rmse: 0.113056

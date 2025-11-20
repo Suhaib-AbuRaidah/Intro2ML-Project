@@ -8,16 +8,20 @@ from typing import Tuple, List, Dict
 import matplotlib.pyplot as plt
 
 # --- 1. CONFIGURATION ---
-CHECKPOINT_PATH = "checkpoints/best.pth" 
-TEST_INDEX_FILE = "test.txt" # The file containing your data paths (comma-separated)
+CHECKPOINT_PATH = "checkpoints_3/best.pth" 
+TEST_INDEX_FILE = "test_list.txt" # The file containing your data paths (comma-separated)
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"INFO: Using device: {DEVICE}")
 
 # Input parameters from your model
 IN_CHANNELS = 6
-BASE_CHANNELS = 32
+BASE_CHANNELS = 64
 INPUT_H, INPUT_W = 360, 640 
-BATCH_SIZE = 4 
+BATCH_SIZE = 8
+
+# Output file paths for saving results
+METRICS_OUTPUT_FILE = "test_metrics_summary.txt"
+BATCH_LOSS_OUTPUT_FILE = "test_batch_losses.txt"
 
 # --- 2. MODEL DEFINITION (UNMODIFIED) ---
 
@@ -33,25 +37,34 @@ class ConvBlock(nn.Module):
         return self.relu(self.bn(self.conv(x)))
 
 class DepthCompletionNet(nn.Module):
-    """Depth Completion Network Architecture."""
-    def __init__(self, input_channels=6, base_channels=32):
+    """
+    Simple model: 1 encoder + 1 decoder (FAST)
+    Includes Dropout regularization to combat overfitting.
+    """
+    def __init__(self, input_channels=6, base_channels=64, dropout_rate=0.3):
         super(DepthCompletionNet, self).__init__()
         
+        # Encoder (compress)
         self.enc = nn.Sequential(
             ConvBlock(input_channels, base_channels, 3, 1, 1),
-            ConvBlock(base_channels, base_channels * 2, 3, 2, 1),
-            ConvBlock(base_channels * 2, base_channels * 4, 3, 2, 1),
+            ConvBlock(base_channels, 32, 3, 2, 1),  # /2
+            ConvBlock(32, 16, 3, 2, 1),  # /4
         )
+
+        # REGULARIZATION: Dropout applied to the feature maps from the encoder
+        self.encoder_dropout = nn.Dropout2d(dropout_rate)
         
+        # Bottleneck
         self.bottleneck = nn.Sequential(
-            ConvBlock(base_channels * 4, base_channels * 8, 3, 1, 1),
-            ConvBlock(base_channels * 8, base_channels * 4, 3, 1, 1),
+            ConvBlock(16, 8, 3, 1, 1),
+            ConvBlock(8, 16, 3, 1, 1),
         )
         
+        # Decoder (decompress)
         self.dec = nn.Sequential(
-            nn.ConvTranspose2d(base_channels * 4, base_channels * 2, 4, 2, 1),
-            ConvBlock(base_channels * 2, base_channels * 2, 3, 1, 1),
-            nn.ConvTranspose2d(base_channels * 2, base_channels, 4, 2, 1),
+            nn.ConvTranspose2d( 16, 32, 4, 2, 1),  # x2
+            ConvBlock(32, 32, 3, 1, 1),
+            nn.ConvTranspose2d(32, base_channels, 4, 2, 1),  # x2
             ConvBlock(base_channels, base_channels, 3, 1, 1),
             nn.Conv2d(base_channels, 1, 1),
             nn.ReLU()
@@ -59,9 +72,12 @@ class DepthCompletionNet(nn.Module):
 
     def forward(self, x):
         enc = self.enc(x)
+        enc = self.encoder_dropout(enc) # Apply dropout here
         bottleneck = self.bottleneck(enc)
         out = self.dec(bottleneck)
         return out
+
+
 
 # --- 3. DATA LOADING AND PREPROCESSING HELPERS (UNMODIFIED) ---
 
@@ -223,6 +239,33 @@ def plot_batch_loss(batch_losses: List[float], total_avg_loss: float):
     plt.show()
     print("\nINFO: Test Loss Plot displayed.")
 
+def save_metrics_to_txt(metrics: Dict[str, float], filename: str):
+    """Saves the final calculated metrics to a text file."""
+    try:
+        with open(filename, 'w') as f:
+            f.write("--- DEPTH COMPLETION TEST METRICS ---\n\n")
+            for key, value in metrics.items():
+                if 'acc' in key:
+                    f.write(f"{key}: {value:.2f}%\n")
+                else:
+                    f.write(f"{key}: {value:.6f}\n")
+            # Also write the calculated RMSE for convenience
+            if 'avg_mse' in metrics:
+                rmse = np.sqrt(metrics['avg_mse'])
+                f.write(f"avg_rmse: {rmse:.6f}\n")
+        print(f"INFO: Final metrics summary saved to {filename}")
+    except Exception as e:
+        print(f"ERROR: Could not save metrics to {filename}. Reason: {e}")
+
+def save_batch_losses_to_txt(batch_losses: List[float], filename: str):
+    """Saves the list of per-batch losses to a text file, one loss per line."""
+    try:
+        with open(filename, 'w') as f:
+            for loss in batch_losses:
+                f.write(f"{loss:.6f}\n")
+        print(f"INFO: Per-batch losses saved to {filename}")
+    except Exception as e:
+        print(f"ERROR: Could not save batch losses to {filename}. Reason: {e}")
 
 # --- 6. MAIN EVALUATION FUNCTION (MODIFIED) ---
 
@@ -344,6 +387,10 @@ if __name__ == "__main__":
     print(f"  Delta < 1.25^2 (Acc2): {metrics['acc_delta_1.25^2']:.2f}%")
     print(f"  Delta < 1.25^3 (Acc3): {metrics['acc_delta_1.25^3']:.2f}%")
     print("---------------------------------------------------------")
+    
+    # Save the results to text files
+    save_metrics_to_txt(metrics, METRICS_OUTPUT_FILE)
+    save_batch_losses_to_txt(batch_losses, BATCH_LOSS_OUTPUT_FILE)
     
     # Plot the results
     plot_batch_loss(batch_losses, metrics['avg_mse'])

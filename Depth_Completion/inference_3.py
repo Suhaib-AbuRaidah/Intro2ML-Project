@@ -223,7 +223,7 @@ if __name__ == '__main__':
     # --- Configuration for testing ---
     
     # 1. CHECKPOINT PATH: Replace this with the actual path to your trained model weights (.pth or .pt file)
-    CHECKPOINT_PATH = "checkpoints_2/best.pth" 
+    CHECKPOINT_PATH = "checkpoints_3/best.pth" 
     
     # 2. INPUT PATHS: Replace these with the actual paths to your test images
     # Example data (replace with your file names)
