@@ -33,7 +33,6 @@ class DepthCompletionNet(nn.Module):
         self.enc = nn.Sequential(
             ConvBlock(input_channels, base_channels, 3, 1, 1),
             ConvBlock(base_channels, 32, 3, 2, 1),  # /2
-            ConvBlock(32, 16, 3, 2, 1),  # /4
         )
 
         # REGULARIZATION: Dropout applied to the feature maps from the encoder
@@ -41,14 +40,12 @@ class DepthCompletionNet(nn.Module):
         
         # Bottleneck
         self.bottleneck = nn.Sequential(
-            ConvBlock(16, 8, 3, 1, 1),
-            ConvBlock(8, 16, 3, 1, 1),
+            ConvBlock(32, 16, 3, 1, 1),
+            ConvBlock(16, 32, 3, 1, 1),
         )
         
         # Decoder (decompress)
         self.dec = nn.Sequential(
-            nn.ConvTranspose2d( 16, 32, 4, 2, 1),  # x2
-            ConvBlock(32, 32, 3, 1, 1),
             nn.ConvTranspose2d(32, base_channels, 4, 2, 1),  # x2
             ConvBlock(base_channels, base_channels, 3, 1, 1),
             nn.Conv2d(base_channels, 1, 1),

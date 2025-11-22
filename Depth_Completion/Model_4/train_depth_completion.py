@@ -5,7 +5,6 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
-import cv2
 
 # Import model from depth_completion_network
 from depth_completion_network import DepthCompletionNet, load_and_preprocess_input_fast, extract_boundaries_from_rgb, INPUT_H, INPUT_W
@@ -119,15 +118,19 @@ def main():
     parser.add_argument("--epochs", type=int, default=20, help="Epochs")
     parser.add_argument("--batch", type=int, default=16, help="Batch size")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--out_dir", default="checkpoints_3", help="Output dir")
+    parser.add_argument("--out_dir", default="checkpoints", help="Output dir")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--amp", action="store_true", help="Use AMP")
     parser.add_argument("--lambda_smooth", type=float, default=1e-3, help="Smoothness weight")
-    parser.add_argument("--val_freq", type=int, default=5, help="Validate every N epochs")
+    parser.add_argument("--val_freq", type=int, default=1, help="Validate every N epochs")
     args = parser.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
     device = torch.device(args.device)
+
+    # --- File paths for logging losses ---
+    train_loss_file = os.path.join(args.out_dir, "train_losses.txt")
+    val_loss_file = os.path.join(args.out_dir, "val_losses.txt")
 
     if device.type == 'cuda':
         torch.cuda.empty_cache()
@@ -170,22 +173,30 @@ def main():
         print(f"[EP {ep}/{args.epochs}] Training...")
         train_loss = train_epoch(model, train_loader, optim, device, args.lambda_smooth, scaler, args.amp)
         scheduler.step()
-        
+
         t1 = time.time()
         print(f"[EP {ep}/{args.epochs}] train_loss={train_loss:.6f} time={t1-t0:.1f}s\n")
-        
+
+        # Save training loss
+        with open(train_loss_file, 'a') as f:
+            f.write(f"{train_loss}\n")
+
         # Validate every N epochs
         if val_loader and ep % args.val_freq == 0:
             print(f"[EP {ep}/{args.epochs}] Validating...")
             val_loss = validate(model, val_loader, device)
             print(f"[EP {ep}/{args.epochs}] val_loss={val_loss:.6f}\n")
-            
+
+            # Save validation loss
+            with open(val_loss_file, 'a') as f:
+                f.write(f"{val_loss}\n")
+
             if val_loss < best_val:
                 best_val = val_loss
                 best_ckpt_path = os.path.join(args.out_dir, "best.pth")
                 torch.save({'epoch': ep, 'model_state': model.state_dict()}, best_ckpt_path)
                 print(f"[BEST] val_loss={best_val:.6f}\n")
-        
+
         # Save checkpoint every epoch
         ckpt_path = os.path.join(args.out_dir, f"ckpt_ep{ep:03d}.pth")
         torch.save({'epoch': ep, 'model_state': model.state_dict()}, ckpt_path)
