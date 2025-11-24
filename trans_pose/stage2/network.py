@@ -3,6 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from trans_pose.stage2.feature_encoding.dense_fusion import DenseFusion
 
+# comments for me (ghina)
+# segmentation head --> which points belong to the object --> seg logits 
+# classify each point as object or background 
 class PointSegHead(nn.Module):
     # MODIFIED: This head is now for BINARY segmentation (Object vs. Background).
     # It will output 1 logit per point.
@@ -30,7 +33,9 @@ class PointSegHead(nn.Module):
         # out: [B, C, N] -> [B, N, C]
         return out.permute(0, 2, 1) # Shape: [B, N, 1]
 
-
+# offset head --> predict offsets to keypoints for each point --> offsets
+# for each point, predict offset to each keypoint (K keypoints) 
+# why offset? robust, voting, unchangeable when obje ct moves
 class OffsetHead(nn.Module):
     def __init__(self, in_dim: int, num_keypoints: int):
         super().__init__()
@@ -60,7 +65,10 @@ class OffsetHead(nn.Module):
     
 class TransPoseNetwork(nn.Module):
     # MODIFIED: num_classes is no longer needed for the binary segmentation head.
-    def __init__(self, img_outdim=128,normals_outdim=64,points_outdim=256, num_keypoints=10, **kwargs):
+    def __init__(self, img_outdim=128,
+                 normals_outdim=64,
+                 points_outdim=256, 
+                 num_keypoints=10, **kwargs):
         super().__init__()
         self.features = DenseFusion(image_channels=img_outdim,
                                     normal_channels=normals_outdim,

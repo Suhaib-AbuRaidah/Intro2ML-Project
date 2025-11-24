@@ -79,7 +79,7 @@ class PointNetBackbone(nn.Module):
     Note: PointNet with global_feat=False and out_dim=256 returns:
           256 (global) + 64 (pointfeat) = 320 channels
     """
-    def __init__(self, out_dim: int = 512):
+    def __init__(self, out_dim: int = 256):
         super().__init__()
         self.out_dim = out_dim
         self.pointnet_hidden = 256

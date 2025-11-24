@@ -48,7 +48,7 @@ def scale_intrinsics(fx, fy, cx, cy, original_size, new_size):
     return fx * scale_w, fy * scale_h, cx * scale_w, cy * scale_h
 
 if __name__ == "__main__":
-    intrinsics_filepath = r"F:/ML-Dataset/transcg-info/transcg/camera_intrinsics/1-camIntrinsics-D435.npy"
+    intrinsics_filepath = r"C:\\Users\\user\\Desktop\\AUB\\Intro2ML\\Project\\TransCG\\camera_intrinsics\\1-camIntrinsics-D435.npy"
     fx, fy, cx, cy = read_intrinsics(intrinsics_filepath)
 
     print("Original Camera Intrinsics (for 1280x720):")

@@ -6,7 +6,14 @@ from torch.autograd import Variable
 import numpy as np
 import torch.nn.functional as F
 
+# comments for me (ghina)
+# if global_feat is True -> classification task; return global feature vector
+# if global_feat is False -> segmentation task; return point features for each point
+#  we need global_feat = False --> output: [B, out_dim +64, N] for each point (point features + global feature vector)
 
+# spatial transformer 
+# learns a 3x3 rotation matrix to align input point cloud to a canonical space --> rotation invariant 
+# goal: rotate every point using the learned transformation matrix 
 class STN3d(nn.Module):
     def __init__(self, channel):
         super(STN3d, self).__init__()
@@ -112,7 +119,8 @@ class PointNetEncoder(nn.Module):
         if D > 3:
             x = torch.cat([x, feature], dim=2)
         x = x.transpose(2, 1)
-        x = F.relu(self.conv1(x))
+        # a shared ML appled to each point independently with kernel size= 1
+        x = F.relu(self.bn1(self.conv1(x)))
 
         if self.feature_transform:
             trans_feat = self.fstn(x)
@@ -123,7 +131,7 @@ class PointNetEncoder(nn.Module):
             trans_feat = None
 
         pointfeat = x
-        x = F.relu(self.conv2(x))
+        x = F.relu(self.bn2(self.conv2(x)))
         x = self.bn3(self.conv3(x))
         x = torch.max(x, 2, keepdim=True)[0]
         x = x.view(-1, self.out_dim)

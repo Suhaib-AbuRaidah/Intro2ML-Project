@@ -90,3 +90,78 @@ def sample_2d_features(
     
     # reshape to [B, N, C]
     return sampled.squeeze(-1).transpose(1, 2)
+
+# for image encoder; good to start with 32 channels instead of 64
+# --> 5 deep layers but better than normal CNN
+class ResidualBlock(nn.Module):
+    """ 
+    a lighter residual block 
+    input -> [Conv3x3 -> BN -> ReLU -> Conv3x3 -> BN] + Shortcut -> ReLU
+    """
+
+    def __init__(self, in_ch, out_ch, stride=1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_ch)
+        self.relu = nn.ReLU(inplace=True)
+
+        self.conv2 = nn.Conv2d(out_ch, out_ch, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_ch)
+
+        # use shortcut to match dimensions if stride>1 or channel changes
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_ch != out_ch:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_ch, out_ch, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_ch)
+            )
+
+    def forward(self, x):
+        identity = self.shortcut(x)
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += identity
+        out = self.relu(out)
+        return out
+    
+
+class ImageEncoder_Res(nn.Module):
+    """ 
+    Stem(s2) -> ResBlock(s2) -> ResBlock(s1) -> Project
+    stride = 4 overall
+    """
+    def __init__(self, out_channels: int = 128):
+        super().__init__()
+        # --1-- downsample by 2 -> H/2 
+        self.stem = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1, bias=False),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=True)
+        )
+
+        # --2-- downsample by 2 -> H/4
+        self.layer1 = ResidualBlock(32, 64, stride=2)
+
+        # --3-- feature refinement at H/4
+        self.layer2 = ResidualBlock(64, 64, stride=1)
+
+        # --4-- projection
+        self.final = nn.Sequential(
+            nn.Conv2d(64, out_channels, kernel_size=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+    
+    def forward(self, rgb: torch.Tensor) -> torch.Tensor:
+        squeeze_batch = False
+        if rgb.dim() == 3:
+            rgb = rgb.unsqueeze(0)
+            squeeze_batch = True
+        
+        x = self.stem(rgb) # [B, 32, H/2, W/2]
+        x = self.layer1(x) # [B, 64, H/4, W/4]
+        x = self.layer2(x) # [B, 64, H/4, W/4]
+        x = self.final(x) # [B, out, H/4, W/4]
+
+        return x.squeeze(0) if squeeze_batch else x
+

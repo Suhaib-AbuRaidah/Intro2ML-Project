@@ -78,7 +78,7 @@ def run_epoch(model, dataloader, intrinsics_tuple_scaled, device, optimizer=None
             z = torch.clamp(z, min=1e-8)
             
             # 3D-to-2D Projection using SCALED intrinsics
-            u = (x * fx / z) + cx
+            u = (x * f x / z) + cx
             v = (y * fy / z) + cy
             
             # Use the fixed, scaled dimensions for H and W
