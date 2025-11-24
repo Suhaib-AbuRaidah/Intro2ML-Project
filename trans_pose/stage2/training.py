@@ -92,6 +92,7 @@ def run_epoch(model, dataloader, intrinsics_tuple_scaled, device, optimizer=None
             sampled_mask = F.grid_sample(o_mask.float(), grid, mode='nearest', align_corners=False) # Use align_corners=False
             point_obj_ids = sampled_mask.squeeze(-1).squeeze(1).long()
             
+            # gt_seg is no longer used for multi-class segmentation
             gt_seg = torch.zeros((B, N), dtype=torch.long, device=device)
             target_offsets = torch.zeros((B, N, model.offset_head.num_keypoints, 3), device=device)
             offset_mask = torch.zeros((B, N), dtype=torch.bool, device=device)

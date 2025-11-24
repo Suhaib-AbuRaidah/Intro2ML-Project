@@ -3,7 +3,7 @@ import torch.nn as nn
 from typing import Tuple
 import torch
 
-
+# samples points where mask=1 from all objects
 def build_instance_points(
     depth_c: torch.Tensor,
     mask_inst: torch.Tensor,
@@ -137,3 +137,97 @@ class PointNetBackbone(nn.Module):
         if squeeze_batch:
             return feats.squeeze(0), trans_feat.squeeze(0)
         return feats, trans_feat
+    
+
+# sample points from all objects based on their ids and label them accordingly
+# --> points for all objects in the scene with their instance ids
+
+def build_instance_points_multi(
+    depth_c: torch.Tensor,
+    mask_inst: torch.Tensor,
+    intrinsics: Tuple[float, float, float, float],
+    num_samples: int = 4096,
+    min_depth: float = 0.1,
+    max_depth: float = 3.0,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Back-project depth pixels to 3D points for MULTI-OBJECT scenes.
+    Returns point labels indicating which object each point belongs to.
+    
+    Args:
+        depth_c: [1, H, W] depth map in meters
+        mask_inst: [1, H, W] instance mask with object IDs (0=background, 4, 7, 54, etc.)
+        intrinsics: (fx, fy, cx, cy)
+        num_samples: target number of points (always returns this many)
+        min_depth: minimum valid depth (meters)
+        max_depth: maximum valid depth (meters)
+        
+    Returns:
+        points_xyz: [num_samples, 3] 3D coordinates
+        uv: [num_samples, 2] 2D pixel coordinates
+        point_labels: [num_samples] object ID for each point (0, 4, 7, 54, ...)
+    """
+    fx, fy, cx, cy = intrinsics
+    device = depth_c.device
+    
+    # Create validity mask (any object, mask > 0)
+    valid = (mask_inst.squeeze(0) > 0) & (depth_c.squeeze(0) > 0)
+    valid_indices = torch.nonzero(valid, as_tuple=False)  # [N_valid, 3] (batch, v, u)
+    
+    num_valid = valid_indices.shape[0]
+    
+    # Handle empty mask (no objects visible)
+    if valid_indices.numel() == 0:
+        dummy_xyz = torch.zeros(num_samples, 3, device=device)
+        dummy_uv = torch.zeros(num_samples, 2, device=device)
+        dummy_labels = torch.zeros(num_samples, dtype=torch.long, device=device)
+        return dummy_xyz, dummy_uv, dummy_labels
+    
+    # Sample points (with repetition if needed)
+    if num_valid >= num_samples:
+        # Random sampling without replacement
+        choice = torch.randperm(num_valid, device=device)[:num_samples]
+    else:
+        # Pad by repeating random points
+        extra = num_samples - num_valid
+        reps = torch.randint(0, num_valid, (extra,), device=device)
+        choice = torch.cat([torch.arange(num_valid, device=device), reps], dim=0)
+        choice = choice[torch.randperm(choice.shape[0], device=device)]
+    
+    picked = valid_indices[choice]  # [num_samples, 3]
+    v = picked[:, 1]  # [num_samples]
+    u = picked[:, 2]  # [num_samples]
+    
+    # Back-project to 3D using pinhole camera model
+    z = depth_c[0, 0, v, u]
+    x = (u.float() - cx) * z / fx
+    y = (v.float() - cy) * z / fy
+    
+    points_xyz = torch.stack([x, y, z], dim=-1)  # [num_samples, 3]
+    uv = torch.stack([u.float(), v.float()], dim=-1)  # [num_samples, 2]
+    
+    # **NEW**: Extract object IDs at sampled pixel locations
+    point_labels = mask_inst[0, 0, v, u].long()  # [num_samples] with values [0, 4, 7, 54, ...]
+    
+    return points_xyz, uv, point_labels
+
+ 
+# handling obj id == 0 compared to background = 0 
+# for now we wont do anything --> consider the object not available in that scene
+def remap_mask_for_object_zero(mask_inst: torch.Tensor) -> Tuple[torch.Tensor, bool]:
+     
+    unique_values = torch.unique(mask_inst)
+    has_object_zero = (unique_values == 0).sum() > 1  # More than just background
+    
+    if has_object_zero:
+        # Remap: background (0) → 255, object 0 stays 0
+        mask_remapped = mask_inst.clone()
+        # This is tricky: we need to distinguish "background 0" from "object 0"
+        # Assumption: in corrected masks, if 0 appears AND other IDs appear,
+        # then 0 is an object, not background
+        # 
+        # Safer approach: Use a placeholder value temporarily
+        # We'll handle this in the training loop instead
+        pass
+     
+    return mask_inst, False

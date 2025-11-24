@@ -6,6 +6,10 @@ from trans_pose.stage2.feature_encoding.dense_fusion import DenseFusion
 # comments for me (ghina)
 # segmentation head --> which points belong to the object --> seg logits 
 # classify each point as object or background 
+# issue: binary classification even when multiple objects are present 
+# solution: multi-class segmentation (each object is a class + background)
+# loss: cross-entropy loss and gt labels accordingly
+# --> each point has to be classifided as background or one of the objects (id)
 class PointSegHead(nn.Module):
     # MODIFIED: This head is now for BINARY segmentation (Object vs. Background).
     # It will output 1 logit per point.
@@ -36,6 +40,11 @@ class PointSegHead(nn.Module):
 # offset head --> predict offsets to keypoints for each point --> offsets
 # for each point, predict offset to each keypoint (K keypoints) 
 # why offset? robust, voting, unchangeable when obje ct moves
+# issue: predicts offsets to K keypoints per point 
+# solution: it is now object aware; we know from the segmentation head 
+# which object each point belongs to 
+# -->  offsets are object-aware
+# loss: offsets that match GT object 
 class OffsetHead(nn.Module):
     def __init__(self, in_dim: int, num_keypoints: int):
         super().__init__()
