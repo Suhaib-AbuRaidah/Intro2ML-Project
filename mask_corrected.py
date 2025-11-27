@@ -287,10 +287,10 @@ def main():
     parser.add_argument('--all', action='store_true', help='Process all scenes')
     parser.add_argument('--depth-thresh', type=float, default=0.15, help='Depth threshold (m)')
     parser.add_argument('--data_root', type=str, 
-                        default=r'C:\Users\user\Desktop\AUB\Intro2ML\Project\Intro2ML-Project\tanscg-data-2\train_old',
+                        default='/media/ahmad/New Volume/ML-GD/TransCG/transcg-data-2/transcg',
                         help='Path to training data')
     parser.add_argument('--models_dir', type=str,
-                        default=r'C:\Users\user\Desktop\AUB\Intro2ML\Project\TransCG\models',
+                        default='/media/ahmad/New Volume/ML-GD/TransCG/transcg-info/transcg/models',
                         help='Path to .ply files')
     
     args = parser.parse_args()

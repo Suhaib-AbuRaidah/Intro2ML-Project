@@ -26,9 +26,9 @@ from trans_pose.stage2.network_gd import TransPoseNetworkMulti
 from read_intrinsics import scale_intrinsics
 
 # --- CONFIGURATION ---
-BATCH_SIZE = 1
-LEARNING_RATE = 1e-3
-EPOCHS = 3
+BATCH_SIZE = 2
+LEARNING_RATE = 0.0005
+EPOCHS = 10
 NUM_WORKERS = 0
 
 # Define target output size for images
@@ -74,8 +74,11 @@ def compute_segmentation_loss(seg_logits, point_labels, num_classes=NUM_CLASSES)
     B, N, C = seg_logits.shape
     
     # Flatten for CrossEntropy
-    seg_logits_flat = seg_logits.view(B * N, C)  # [B*N, num_classes]
-    point_labels_flat = point_labels.view(B * N)  # [B*N]
+    B, N, C = seg_logits.shape
+    
+    # Flatten for CrossEntropy (use reshape to handle non-contiguous tensors)
+    seg_logits_flat = seg_logits.reshape(B * N, C)  # [B*N, num_classes]
+    point_labels_flat = point_labels.reshape(B * N).long()  # [B*N]
     
     # CrossEntropy expects long tensor targets
     loss = F.cross_entropy(seg_logits_flat, point_labels_flat, ignore_index=-1)
@@ -83,20 +86,10 @@ def compute_segmentation_loss(seg_logits, point_labels, num_classes=NUM_CLASSES)
     return loss
 
 
+
 def compute_offset_loss_multi(offsets, points, point_labels, kpts_dict_batch, num_keypoints=10):
     """
-    Object-aware offset loss.
-    
-    Computes L1 loss SEPARATELY for each object, then averages.
-    
-    Args:
-        offsets: [B, N, K, 3] predicted offsets
-        points: [B, N, 3] 3D point cloud
-        point_labels: [B, N] ground truth object ID for each point
-        kpts_dict_batch: List of dicts (length B), each dict maps obj_id -> keypoints [K, 3]
-        
-    Returns:
-        loss: scalar
+    Object-aware offset loss - uses point Z as additional feature context.
     """
     B, N, K, _ = offsets.shape
     device = offsets.device
@@ -105,47 +98,40 @@ def compute_offset_loss_multi(offsets, points, point_labels, kpts_dict_batch, nu
     num_objects_processed = 0
     
     for b in range(B):
-        kpts_dict = kpts_dict_batch[b]  # {obj_id: [K, 3], ...}
-        
-        # Get unique object IDs in this batch (excluding background 0)
+        kpts_dict = kpts_dict_batch[b]
         unique_objs = torch.unique(point_labels[b])
-        unique_objs = unique_objs[unique_objs > 0]  # Filter out background
+        unique_objs = unique_objs[unique_objs > 0]
         
         if len(unique_objs) == 0:
-            continue  # No objects in this sample
+            continue
         
         for obj_id in unique_objs:
             obj_id_int = obj_id.item()
             
-            # Check if keypoints exist for this object
             if str(obj_id_int) not in kpts_dict:
-                print(f"WARNING: Keypoints not found for object {obj_id_int} in batch {b}")
                 continue
             
-            # Get points belonging to this object
-            mask_obj = (point_labels[b] == obj_id_int)  # [N]
+            mask_obj = (point_labels[b] == obj_id_int)
             
             if mask_obj.sum() == 0:
-                continue  # No points sampled for this object
-            
-            # Get predicted offsets for this object's points
-            offsets_obj = offsets[b, mask_obj]  # [M, K, 3]
-            points_obj = points[b, mask_obj]    # [M, 3]
-            
-            # Get ground truth keypoints for this object
-            kpts_gt = torch.tensor(kpts_dict[str(obj_id_int)], device=device, dtype=torch.float32)  # [K, 3]
-            
-            if kpts_gt.shape[0] != K:
-                print(f"WARNING: Keypoint mismatch for object {obj_id_int}: expected {K}, got {kpts_gt.shape[0]}")
                 continue
             
-            # Compute target offsets: keypoints - points
-            # kpts_gt: [K, 3], points_obj: [M, 3]
-            # Broadcasting: [1, K, 3] - [M, 1, 3] = [M, K, 3]
+            offsets_obj = offsets[b, mask_obj]       # [M, K, 3]
+            points_obj = points[b, mask_obj]         # [M, 3]
+            
+            kpts_gt = torch.tensor(kpts_dict[str(obj_id_int)], device=device, dtype=torch.float32)
+            
+            if kpts_gt.shape[0] != K:
+                continue
+            
             target_offsets = kpts_gt.unsqueeze(0) - points_obj.unsqueeze(1)  # [M, K, 3]
             
-            # L1 loss for this object
-            loss_obj = F.l1_loss(offsets_obj, target_offsets)
+            # ✅ ONLY X,Y offsets matter (points already have correct Z from depth)
+            # Z can be near-zero, penalize it lightly
+            loss_xy = F.l1_loss(offsets_obj[..., :2], target_offsets[..., :2], reduction='mean')
+            loss_z = F.l1_loss(offsets_obj[..., 2], target_offsets[..., 2], reduction='mean') * 0.1
+            
+            loss_obj = loss_xy + loss_z
             total_loss += loss_obj
             num_objects_processed += 1
     
@@ -153,6 +139,7 @@ def compute_offset_loss_multi(offsets, points, point_labels, kpts_dict_batch, nu
         return total_loss / num_objects_processed
     else:
         return torch.tensor(0.0, device=device)
+
 
 
 def run_epoch(model, dataloader, intrinsics_tuple_scaled, device, optimizer=None, is_train=True, epoch_idx=0):
@@ -170,7 +157,7 @@ def run_epoch(model, dataloader, intrinsics_tuple_scaled, device, optimizer=None
     total_reg = 0.0
     num_batches = 0
     
-    pbar = tqdm.tqdm(dataloader, desc=desc, leave=True, dynamic_ncols=True)
+    pbar = tqdm.tqdm(dataloader, desc=desc, leave=False, dynamic_ncols=True)
 
     for step, data in enumerate(pbar):
         # ⚡ GPU Memory Check (every 10 steps)
@@ -178,14 +165,35 @@ def run_epoch(model, dataloader, intrinsics_tuple_scaled, device, optimizer=None
             mem_allocated = torch.cuda.memory_allocated(device) / 1024**3  # GB
             mem_reserved = torch.cuda.memory_reserved(device) / 1024**3    # GB
             if step == 0:
-                print(f"\n💾 GPU Memory: {mem_allocated:.2f}GB allocated, {mem_reserved:.2f}GB reserved")
-        
-        rgb = data['rgb'].to(device)
-        sn = data['sn'].to(device)
-        depth = data['depth'].to(device)
-        o_mask = data['mask'].to(device)
-        kpts_list = data['keypoints']
-        
+                pbar.write(f"GPU Memory: {mem_allocated:.2f}GB allocated, {mem_reserved:.2f}GB reserved")
+
+        # --- DEBUG WRAPPER: surface dataset / forward errors with context ---
+        try:
+            rgb = data['rgb'].to(device)
+            sn = data['sn'].to(device)
+            depth = data['depth'].to(device)
+            o_mask = data['mask'].to(device)
+            kpts_list = data['keypoints']
+        except Exception as e:
+            print(f"\nERROR: failed preparing batch at step={step} in {desc}")
+            print(f"  data keys: {list(data.keys())}")
+            try:
+                # try to print basic info for each key
+                for k, v in data.items():
+                    if torch.is_tensor(v):
+                        print(f"   {k}: tensor shape={v.shape}, dtype={v.dtype}")
+                    else:
+                        print(f"   {k}: type={type(v)}")
+            except Exception:
+                pass
+            # save raw batch for inspection
+            try:
+                torch.save({'data': data}, "/tmp/failing_batch_preparation.pt")
+                print("  Saved failing batch to /tmp/failing_batch_preparation.pt")
+            except Exception:
+                pass
+            raise
+
         # SKIP SCENES WITH OBJECT ID 0 (if enabled)
         if SKIP_OBJECT_ZERO:
             skip_batch = False
@@ -195,33 +203,74 @@ def run_epoch(model, dataloader, intrinsics_tuple_scaled, device, optimizer=None
                     break
             
             if skip_batch:
-                if step == 0:
-                    print(f"Skipping batch with object ID 0")
-                continue
+                    if step == 0:
+                        pbar.write(f"Skipping batch with object ID 0")
+                    continue
         
-        # --- Forward pass ---
-        with torch.set_grad_enabled(is_train):
-            seg_logits, offsets, points, trans_feat, point_labels = model(
-                rgb, sn, depth, o_mask, intrinsics_tuple_scaled
-            )
-            
-            # --- LOSSES ---
-            loss_seg = compute_segmentation_loss(seg_logits, point_labels, num_classes=NUM_CLASSES)
-            loss_off = compute_offset_loss_multi(
-                offsets, points, point_labels, kpts_list, 
-                num_keypoints=model.offset_head.num_keypoints
-            )
-            loss_reg = feature_transform_regularizer(trans_feat)
-            
-            # Total loss
-            loss_total = 1.0 * loss_seg + 1.0 * loss_off + 0.001 * loss_reg
-            
-            if is_train:
-                optimizer.zero_grad()
-                loss_total.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
-                optimizer.step()
-        
+        # --- Forward + loss inside try to capture runtime errors ---
+        try:
+            with torch.set_grad_enabled(is_train):
+                seg_logits, offsets, points, trans_feat, point_labels = model(
+                    rgb, sn, depth, o_mask, intrinsics_tuple_scaled
+                )
+                
+                # --- LOSSES ---
+                loss_seg = compute_segmentation_loss(seg_logits, point_labels, num_classes=NUM_CLASSES)
+                # loss_off = compute_offset_loss_multi(
+                #     offsets, points, point_labels, kpts_list, 
+                #     num_keypoints=model.offset_head.num_keypoints
+                # )
+                loss_off = compute_offset_loss_multi(
+                    offsets, points, point_labels, kpts_list,
+                    num_keypoints=model.offset_head.num_keypoints
+                )
+
+                pred_kpts_from_offsets = points.unsqueeze(2) + offsets  # [B, N, 1, 3] + [B, N, K, 3] = [B, N, K, 3]
+                loss_var = torch.tensor(0.0, device=device)
+                
+                loss_reg = feature_transform_regularizer(trans_feat)
+                
+                # Total loss (SIMPLE - NO TRICKS)
+                loss_total = 1.0 * loss_seg + 1.0 * loss_off + 0.001 * loss_reg
+
+                if is_train:
+                    optimizer.zero_grad()
+                    loss_total.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
+                    optimizer.step()
+        except Exception as e:
+            pbar.write(f"ERROR: exception during forward/loss at step={step} in {desc}: {e}")
+            # print shapes to help debug
+            try:
+                pbar.write(f" seg_logits: {getattr(seg_logits,'shape',None)}")
+            except Exception:
+                pass
+            try:
+                print(f" offsets: {getattr(offsets,'shape',None)}")
+            except Exception:
+                pass
+            try:
+                print(f" points: {getattr(points,'shape',None)}")
+            except Exception:
+                pass
+            try:
+                print(f" point_labels: {getattr(point_labels,'shape',None)}")
+            except Exception:
+                pass
+            # save problematic batch (CPU)
+            try:
+                save_dict = {}
+                for k, v in data.items():
+                    try:
+                        save_dict[k] = v.cpu() if torch.is_tensor(v) else v
+                    except Exception:
+                        save_dict[k] = str(type(v))
+                torch.save({'data': save_dict}, "/tmp/failing_batch_forward.pt")
+                print("  Saved failing batch to /tmp/failing_batch_forward.pt")
+            except Exception:
+                pass
+            raise
+
         # ⚡ Clear cache after each batch (helps with memory)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -244,6 +293,102 @@ def run_epoch(model, dataloader, intrinsics_tuple_scaled, device, optimizer=None
         return float('inf')
     
     return total_loss / num_batches
+
+def compute_offset_loss_multi_weighted(offsets, points, point_labels, kpts_dict_batch, num_keypoints=10):
+    """
+    Object-aware offset loss WITH Z-AXIS WEIGHTING.
+    
+    Penalizes Z errors 5x more than X,Y to force proper depth learning.
+    
+    Args:
+        offsets: [B, N, K, 3] predicted offsets
+        points: [B, N, 3] 3D point cloud
+        point_labels: [B, N] ground truth object ID for each point
+        kpts_dict_batch: List of dicts (length B), each dict maps obj_id -> keypoints [K, 3]
+    
+    Returns:
+        loss: scalar
+    """
+    B, N, K, _ = offsets.shape
+    device = offsets.device
+    
+    total_loss = 0.0
+    num_objects_processed = 0
+    
+    for b in range(B):
+        kpts_dict = kpts_dict_batch[b]
+        unique_objs = torch.unique(point_labels[b])
+        unique_objs = unique_objs[unique_objs > 0]
+        
+        if len(unique_objs) == 0:
+            continue
+        
+        for obj_id in unique_objs:
+            obj_id_int = obj_id.item()
+            
+            if str(obj_id_int) not in kpts_dict:
+                continue
+            
+            mask_obj = (point_labels[b] == obj_id_int)
+            
+            if mask_obj.sum() == 0:
+                continue
+            
+            offsets_obj = offsets[b, mask_obj]  # [M, K, 3]
+            points_obj = points[b, mask_obj]    # [M, 3]
+            
+            kpts_gt = torch.tensor(kpts_dict[str(obj_id_int)], device=device, dtype=torch.float32)
+            
+            if kpts_gt.shape[0] != K:
+                continue
+            
+            target_offsets = kpts_gt.unsqueeze(0) - points_obj.unsqueeze(1)  # [M, K, 3]
+            
+            # ✅ NEW: Compute per-axis errors with Z weighting
+            error_x = F.l1_loss(offsets_obj[..., 0], target_offsets[..., 0], reduction='mean')
+            error_y = F.l1_loss(offsets_obj[..., 1], target_offsets[..., 1], reduction='mean')
+            error_z = F.l1_loss(offsets_obj[..., 2], target_offsets[..., 2], reduction='mean')
+            
+            # Weight Z 5x more to force proper depth learning
+            loss_obj = 1.0 * error_x + 1.0 * error_y + 5.0 * error_z
+            total_loss += loss_obj
+            num_objects_processed += 1
+    
+    if num_objects_processed > 0:
+        return total_loss / num_objects_processed
+    else:
+        return torch.tensor(0.0, device=device)
+
+
+def compute_keypoint_variance_loss(pred_kpts):
+    """
+    Penalize colinear keypoints by encouraging variance in each dimension.
+    
+    Args:
+        pred_kpts: [B, N, K, 3] predicted keypoints from offsets
+    
+    Returns:
+        loss: scalar (lower = better diversity)
+    """
+    B, N, K, _ = pred_kpts.shape
+    
+    if K < 2:
+        return torch.tensor(0.0, device=pred_kpts.device)
+    
+    # Compute variance per dimension per batch
+    var_x = pred_kpts[..., 0].var(dim=2, keepdim=True)  # [B, N, 1]
+    var_y = pred_kpts[..., 1].var(dim=2, keepdim=True)
+    var_z = pred_kpts[..., 2].var(dim=2, keepdim=True)
+    
+    # Total variance across all dimensions
+    total_var = var_x + var_y + var_z  # [B, N, 1]
+    
+    # ✅ FIXED: Penalize LOW variance (not negate!)
+    # We want to maximize variance, so loss = 1 / (1 + variance)
+    # Lower variance → higher loss
+    loss = 1.0 / (1.0 + total_var.mean())
+    
+    return loss
 
 class EarlyStopping:
     def __init__(self, patience=5, min_delta=1e-4):
@@ -269,9 +414,9 @@ if __name__ == "__main__":
     print(f"Skip object ID 0: {SKIP_OBJECT_ZERO}")
 
     # 1. DATASETS
-    keypoints_dir = "C:\\Users\\user\\Desktop\\AUB\\Intro2ML\\Project\\Intro2ML-Project\\tanscg-data-2\\keypoints"
-    train_dir = "C:\\Users\\user\\Desktop\\AUB\\Intro2ML\\Project\\Intro2ML-Project\\tanscg-data-2\\train"
-    valid_dir = "C:\\Users\\user\\Desktop\\AUB\\Intro2ML\\Project\\Intro2ML-Project\\tanscg-data-2\\valid"
+    keypoints_dir = "/media/ahmad/New Volume/ML-GD/TransCG/transcg-data-2/keypoints"
+    train_dir = "/media/ahmad/New Volume/ML-GD/TransCG/transcg-data-2/train"
+    valid_dir = "/media/ahmad/New Volume/ML-GD/TransCG/transcg-data-2/valid"
 
     data_transforms = T.ToTensor()
 
@@ -374,11 +519,16 @@ if __name__ == "__main__":
         checkpoint = torch.load(latest_ckpt)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        if 'scheduler_state_dict' in checkpoint:
+            scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         best_val_loss = checkpoint.get('best_val_loss', float('inf'))
         print(f"Resumed at Epoch {start_epoch}")
 
     earlystop = EarlyStopping(patience=PATIENCE)
+    train_losses = []
+    val_losses = []
+
     # 5. TRAINING LOOP
     for epoch in range(start_epoch, EPOCHS):
         current_lr = scheduler.get_last_lr()[0]
@@ -396,6 +546,9 @@ if __name__ == "__main__":
         scheduler.step()
         
         print(f"Summary Ep {epoch+1}: Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+        #  append histories 
+        train_losses.append(float(train_loss))
+        val_losses.append(float(val_loss))
         
         # checkpointing same as before...
         if earlystop.step(val_loss):
@@ -409,7 +562,10 @@ if __name__ == "__main__":
             'optimizer_state_dict': optimizer.state_dict(),
             'best_val_loss': best_val_loss,
             'loss': train_loss,
-            'num_classes': NUM_CLASSES
+            'num_classes': NUM_CLASSES,
+            'train_losses': train_losses, 
+            'val_losses': val_losses,
+            'scheduler_state_dict': scheduler.state_dict()
         }
         
         # Save Latest (Overwrites)
@@ -424,6 +580,16 @@ if __name__ == "__main__":
             best_val_loss = val_loss
             torch.save(checkpoint, os.path.join(SAVE_DIR, "best_model.pth"))
             print(f">>> New Best Model! (Val Loss: {val_loss:.4f})")
+
+        try:
+            import numpy as _np, json as _json
+            _np.savez_compressed(os.path.join(SAVE_DIR, "loss_history.npz"),
+                                train=_np.array(train_losses), val=_np.array(val_losses))
+            with open(os.path.join(SAVE_DIR, "loss_history.json"), "w") as _f:
+                _json.dump({"train": train_losses, "val": val_losses}, _f)
+        except Exception as e:
+            print(f"Warning: saving loss history failed: {e}")
+
     
     print("\n" + "="*60)
     print("TRAINING COMPLETE!")

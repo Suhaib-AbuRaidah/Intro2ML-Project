@@ -11,3 +11,7 @@ tanscg-data-2/
 */output/
 checkpoints/
 trans_pose/stage2/checkpoints_multi
+eval_results/ 
+
+vis_model1/
+vis_model2/

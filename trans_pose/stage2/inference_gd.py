@@ -52,6 +52,62 @@ def estimate_pose_kabsch(src_pts, dst_pts):
     T[:3, :3] = R.astype(np.float32)
     T[:3, 3] = t.astype(np.float32)
     return T
+# ...existing code...
+
+def visualize_segmentation_and_keypoints(rgb_np, seg_pred, pred_poses_dict, obj_ids, out_dir, sample_idx):
+    """
+    Create side-by-side visualization of segmentation + keypoints.
+    
+    Args:
+        rgb_np: [H, W, 3] uint8 RGB image
+        seg_pred: [N] predicted class IDs
+        pred_poses_dict: {obj_id_str: {'T': T, 'pred_kpts': [...], ...}}
+        obj_ids: list of object IDs to visualize
+        out_dir: output directory
+        sample_idx: sample index (for filename)
+    """
+    import matplotlib.pyplot as plt
+    
+    H, W = rgb_np.shape[:2]
+    
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    
+    # Panel 1: Segmentation mask overlay
+    seg_visual = np.zeros((H, W, 3), dtype=np.uint8)
+    colors = plt.cm.tab20(np.linspace(0, 1, len(obj_ids)))
+    
+    for i, obj_id in enumerate(obj_ids):
+        mask = (seg_pred == int(obj_id))
+        color = (colors[i, :3] * 255).astype(np.uint8)
+        seg_visual[mask] = color
+    
+    axes[0].imshow(rgb_np)
+    axes[0].imshow(seg_visual, alpha=0.4)
+    axes[0].set_title('Predicted Segmentation')
+    axes[0].axis('off')
+    
+    # Panel 2: Keypoints visualization (scatter)
+    axes[1].imshow(rgb_np)
+    for obj_id_str, pose_info in pred_poses_dict.items():
+        pred_kpts = pose_info['pred_kpts']
+        if pred_kpts.shape[0] > 0:
+            # Project keypoints to 2D if needed (if in 3D, use simple projection)
+            u = pred_kpts[:, 0]
+            v = pred_kpts[:, 1]
+            axes[1].scatter(u, v, s=100, marker='o', edgecolors='white', linewidth=2)
+            for i, (ui, vi) in enumerate(zip(u, v)):
+                axes[1].text(ui+5, vi+5, str(i), color='yellow', fontsize=8)
+    
+    axes[1].set_title('Predicted Keypoints')
+    axes[1].axis('off')
+    
+    plt.tight_layout()
+    out_path = os.path.join(out_dir, f'sample_{sample_idx}_visualization.png')
+    plt.savefig(out_path, dpi=100, bbox_inches='tight')
+    plt.close()
+    
+    return out_path
+
 
 def predict_and_save(args):
     device = torch.device(args.device)
@@ -129,6 +185,16 @@ def predict_and_save(args):
     # save poses
     out_dir = args.outdir
     os.makedirs(out_dir, exist_ok=True)
+    
+    # --- NEW: Save visualization ---
+    if args.visualize:
+        rgb_np = sample['rgb'].permute(1, 2, 0).cpu().numpy()
+        rgb_np = (rgb_np * 255).astype(np.uint8)
+        vis_path = visualize_segmentation_and_keypoints(
+            rgb_np, seg_pred, poses, unique_ids, out_dir, idx
+        )
+        print(f"Visualization saved to {vis_path}")
+    
     base = f"sample_{idx}_poses.npy"
     save_path = os.path.join(out_dir, base)
     np.save(save_path, poses)
@@ -142,6 +208,7 @@ if __name__ == "__main__":
     p.add_argument("--index", type=int, default=0, help="Sample index in Stage2Dataset to run inference on")
     p.add_argument("--num_classes", type=int, default=61)
     p.add_argument("--outdir", default="inference_out")
+    p.add_argument("--visualize", action="store_true", help="Save visualization PNG")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = p.parse_args()
     predict_and_save(args)
