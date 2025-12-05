@@ -1,143 +1,213 @@
-import os
 import torch
 from torch.utils.data import Dataset
-from PIL import Image
 import numpy as np
 import cv2
-import sys
-from torchvision import transforms as T
-sys.path.append("/home/suhaib/ML_Project")
-class Stage2Dataset(Dataset):
-	def __init__(self, root_dir, transforms=None):
+import os
+import json
+import glob
+from pathlib import Path
+
+class Stage2Dataset2(Dataset):
+	def __init__(self, root_dir, keypoints_dir, camera_id='1', num_keypoints=10, transforms=None, target_size=None):
 		"""
-		root_dir: path to scenes (e.g., ~/ML_Project/data/transcg-data-1/transcg)
+		Args:
+			root_dir: Path to 'tanscg-data-2'
+			keypoints_dir: Path to 'tanscg-data-2/keypoints'
+			camera_id: '1' for D435.
+			target_size (tuple, optional): (width, height) to resize images to.
 		"""
 		self.root_dir = root_dir
+		self.camera_id = str(camera_id)
+		self.num_keypoints = num_keypoints
 		self.transforms = transforms
-		self.samples = []
-		camera_int_dir = root_dir.replace("transcg-data-1/transcg","transcg-info/transcg/camera_intrinsics")
-		camera_intri_file = os.path.join(camera_int_dir, "1-camIntrinsics-D435.npy")
-		self.camera_intrisics = np.load(camera_intri_file)
+		self.target_size = target_size # (W, H)
+		
+		# 1. Load Canonical Keypoints
+		self.canonical_kpts = self._load_all_keypoints(keypoints_dir)
+		
+		# 2. Index Scenes
+		self.data_list = []
+		self.scenes = sorted(glob.glob(os.path.join(root_dir, "scene*")))
+		
+		print(f"Found {len(self.scenes)} scenes. Indexing D435 frames...")
+		
+		for scene_path in self.scenes:
+			meta_path = os.path.join(scene_path, "metadata.json")
+			if not os.path.exists(meta_path): continue
+				
+			with open(meta_path, 'r') as f:
+				meta = json.load(f)
+				
+			# Get valid perspective folders (e.g. 0, 1, 2...)
+			valid_folders = meta.get("D435_valid_perspective_list", [])
+			scene_objects = meta.get("model_list", [])
+			
+			for folder_num in valid_folders:
+				# The folder name is the perspective number (e.g. "0")
+				perspective_folder = os.path.join(scene_path, str(folder_num))
+				if not os.path.isdir(perspective_folder): continue
+				
+				# STRICT FILE NAMING: Always use camera_id.png (e.g. "1.png")
+				rgb_filename = f"rgb{self.camera_id}.png"
+				depth_filename = f"depth{self.camera_id}.png"
+				sn_filename = f"depth{self.camera_id}-gt-sn.png"                
+				mask_filename = f"depth{self.camera_id}-gt-mask.png"
+				pose_filename = f"{self.camera_id}.npy"
+				
+				rgb_path = os.path.join(perspective_folder, rgb_filename)
+				depth_path = os.path.join(perspective_folder, depth_filename)
+				mask_path = os.path.join(perspective_folder, mask_filename)
+				sn_path = os.path.join(perspective_folder, sn_filename)
+				
+				# Pose is inside a folder 'corrected_pose'
+				pose_path = os.path.join(perspective_folder, "corrected_pose", pose_filename)
+				
+				# Only add if essential files exist
+				if os.path.exists(rgb_path) and os.path.exists(depth_path):
+					self.data_list.append({
+						'rgb_path': rgb_path,
+						'depth_path': depth_path,
+						'sn_path': sn_path,
+						'mask_path': mask_path,
+						'pose_path': pose_path,
+						'model_list': scene_objects
+					})
+		
+		print(f"Indexed {len(self.data_list)} valid samples.")
 
-		keypoints_dir = root_dir.replace("transcg-data-1/transcg","transcg-info/transcg/keypoints")
-		self.keypoints = {}
-		self.center= {}
-		for file in sorted(os.listdir(keypoints_dir)):
-			file_id = file[0:2] if file[1].isdigit() else file[0]
-			keypoints_path = os.path.join(keypoints_dir, file)
-			data = np.load(keypoints_path, allow_pickle=True)
-			obj = data["arr_0"].item()     # extract Python dict
-			kpts = obj["keypoints"]
-			center = obj["center"]
-			self.keypoints[file_id] = kpts
-			self.center[file_id] = center
+		# Intrinsics (D435)
+		# image is downsampled by 2 from 1280x720 to 640x360 so we modify cx, fy, cy and fx accordingly -- ghina 
+		self.camera_intrisics = np.array([
+			[463.58, 0.0, 325.66],
+			[0.0, 463.69, 174.81],
+			[0.0, 0.0, 1.0]
+		], dtype=np.float32)
 
-		# Traverse all scenes
-		for scene_name in sorted(os.listdir(root_dir)):
-			scene_path = os.path.join(root_dir, scene_name)
-			if not os.path.isdir(scene_path):
-				continue
 
-			# scene subfolders (0,1,2,...)
-			for sub_name in sorted(os.listdir(scene_path)):
-				sub_path = os.path.join(scene_path, sub_name)
-				if not os.path.isdir(sub_path) or sub_name == "metadata.json":
-					continue
+	def _load_all_keypoints(self, kpts_dir):
+		kpts_map = {}
+		if not os.path.exists(kpts_dir): return kpts_map
+		files = glob.glob(os.path.join(kpts_dir, "*.npz"))
+		for f in files:
+			try:
+				fname = os.path.basename(f)
+				obj_id = int(fname.split('-')[0])
+				data = np.load(f)
+				pts = data['points'] if 'points' in data else data[list(data.keys())[0]]
+				if len(pts) > self.num_keypoints:
+					indices = np.linspace(0, len(pts)-1, self.num_keypoints, dtype=int)
+					pts = pts[indices]
+				kpts_map[obj_id] = pts.astype(np.float32)
+			except: pass
+		return kpts_map
 
-				# Look for rgb1.png
-				for fname in os.listdir(sub_path):
-					if fname.startswith("rgb1") and fname.endswith(".png"):
-						idx = fname.replace("rgb", "").replace(".png", "")
-						
-						rgb_path = os.path.join(sub_path, f"rgb{idx}.png")
-						sn_path = os.path.join(sub_path, f"depth{idx}-gt-sn.png")
-						depth_path = os.path.join(sub_path, f"depth{idx}-gt.png")
-						mask_path = os.path.join(sub_path, f"depth{idx}-gt-mask.png")
 
-						corrected_pose_dir = os.path.join(sub_path, "corrected_pose")
-
-						if (
-							os.path.exists(sn_path)
-							and os.path.exists(depth_path)
-							and os.path.exists(mask_path)
-							and os.path.isdir(corrected_pose_dir)
-						):
-							self.samples.append(
-								dict(
-									rgb=rgb_path,
-									sn=sn_path,
-									depth=depth_path,
-									mask=mask_path,
-									pose_dir=corrected_pose_dir,
-								)
-							)
-
-		if len(self.samples) == 0:
-			raise RuntimeError(f"No valid samples found in {root_dir}")
 
 	def __len__(self):
-		return len(self.samples)
+		return len(self.data_list)
 
 	def __getitem__(self, idx):
-		item = self.samples[idx]
+		item = self.data_list[idx]
+		
+		# 1. RGB
+		rgb = cv2.imread(item['rgb_path'])
+		rgb = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+		
+		# 2. Depth (mm -> meters)
+		depth = cv2.imread(item['depth_path'], cv2.IMREAD_UNCHANGED)
+		depth = depth.astype(np.float32) / 1000.0
+		
+		sn = cv2.imread(item['sn_path'])
+		sn = cv2.cvtColor(rgb, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+		
+		# 3. Mask (depth-gt-mask)
+		mask = cv2.imread(item['mask_path'], cv2.IMREAD_UNCHANGED)
+		if mask is None: mask = np.zeros_like(depth, dtype=np.uint8)
 
-		rgb = Image.open(item["rgb"]).convert("RGB")
-		sn = Image.open(item["sn"]).convert("RGB")
-		depth = Image.open(item["depth"]).convert("L")     # depth is single channel
-		mask = Image.open(item["mask"]).convert("L")
+		# --- RESIZING ---
+		if self.target_size:
+			# Resize with correct interpolation
+			# For RGB, use INTER_LINEAR. For depth/mask, use INTER_NEAREST.
+			rgb = cv2.resize(rgb, self.target_size, interpolation=cv2.INTER_LINEAR)
+			depth = cv2.resize(depth, self.target_size, interpolation=cv2.INTER_NEAREST)
+			sn = cv2.resize(sn, self.target_size, interpolation=cv2.INTER_LINEAR)
+			mask = cv2.resize(mask, self.target_size, interpolation=cv2.INTER_NEAREST)
+		# --- END RESIZING ---
 
-		target_size = (256, 256)
-		rgb = rgb.resize(target_size, Image.BILINEAR)
-		sn = sn.resize(target_size, Image.BILINEAR)
-		depth = depth.resize(target_size, Image.BILINEAR)
-		mask = mask.resize(target_size, Image.NEAREST)
+		# 4. Normals (Computed on the fly from the potentially resized depth map)
 
-		# Load all corrected poses
-		pose_dict = {}
-		kepoints_dict = {}
-		center_dict = {}
-		for f in sorted(os.listdir(item["pose_dir"])):
-			if f.endswith(".npy"):
-				obj_id = f.replace(".npy", "")
-				pose_path = os.path.join(item["pose_dir"], f)
-				pose_dict[obj_id] = np.load(pose_path)
-				kepoints_dict[obj_id] = self.keypoints[obj_id]
-				center_dict[obj_id] = self.center[obj_id]
+		
+		# 5. Pose & Keypoints
+		# Note: Keypoints are in world coordinates, so they are not affected by image resizing.
+		target_keypoints = {}
+		target_poses = {}
+		target_centers = {}
 
-		if self.transforms:
-			# apply transforms
-			rgb = self.transforms(rgb).float()
-			sn = self.transforms(sn).float()
-			depth = self.transforms(depth).float()
-			mask = self.transforms(mask).float()
+
+		pose_data = np.load(item['pose_path'], allow_pickle=True)
+		print(pose_data)
+		poses_dict = {}
+		if isinstance(pose_data, dict): poses_dict = pose_data
+		elif pose_data.shape == (): poses_dict = pose_data.item()
+		
+		for obj_id in item['model_list']:
+			if obj_id in poses_dict and obj_id in self.canonical_kpts:
+				pose = poses_dict[obj_id]
+				kpts_can = self.canonical_kpts[obj_id]
+				target_keypoints[str(obj_id)] = kpts_can.tolist()
+				target_poses[str(obj_id)] = pose.tolist()
+
+
 
 		return {
-			"rgb": rgb,
-			"sn": sn,
-			"depth": depth,
-			"mask": mask,
-			"poses": pose_dict,
-			"keypoints": kepoints_dict,
-			"centers": center_dict
+			'rgb': torch.from_numpy(rgb).permute(2, 0, 1).float(),
+			'depth': torch.from_numpy(depth).unsqueeze(0).float(),
+			'mask': torch.from_numpy(mask).unsqueeze(0).float(),
+			'sn': torch.from_numpy(sn).permute(2, 0, 1).float(),
+			'keypoints': target_keypoints,
+			'poses': target_poses,
+			'centers': target_centers,
+			'intrinsics': self.camera_intrisics
 		}
-	
+
+	def compute_normals(self, depth):
+		zy, zx = np.gradient(depth)
+		normal = np.dstack((-zx, -zy, np.ones_like(depth)))
+		n = np.linalg.norm(normal, axis=2)
+		n[n == 0] = 1.0
+		normal[:, :, 0] /= n
+		normal[:, :, 1] /= n
+		normal[:, :, 2] /= n
+		return normal
+
 def collate_fn(batch):
-    out = {}
-
-    # Non-dict items (rgb, sn, depth, mask) → stack normally
-    for key in ["rgb", "sn", "depth", "mask"]:
-        out[key] = torch.stack([item[key] for item in batch], dim=0)
-
-    # Dict items → keep as a list of dicts (no merging, no stacking)
-    for key in ["poses", "keypoints", "centers"]:
-        out[key] = [item[key] for item in batch]
-
-    return out
+	return {
+		'rgb': torch.stack([item['rgb'] for item in batch]),
+		'depth': torch.stack([item['depth'] for item in batch]),
+		'mask': torch.stack([item['mask'] for item in batch]),
+		'sn': torch.stack([item['sn'] for item in batch]),
+		'keypoints': [item['keypoints'] for item in batch],
+		'poses': [item['poses'] for item in batch],
+		'centers': [item['centers'] for item in batch],
+	}
 
 if __name__=="__main__":
 	from torchvision import transforms as T
-	root_dir = "./data/transcg-data-1/transcg"
-	dataset = Stage2Dataset(root_dir, transforms=T.ToTensor())
+
+	keypoints_dir ="./data/transcg-info/transcg/keypoints"
+	data_dir = "./data/transcg-data-1/transcg" 
+	# valid_dir = "F:/ML-Dataset/valid"
+
+	data_transforms = T.ToTensor() 
+
+	dataset = Stage2Dataset(
+		root_dir=data_dir,
+		keypoints_dir=keypoints_dir,
+		transforms=data_transforms,
+		# --- PASS TARGET SIZE TO DATASET ---
+		target_size=(360, 480)
+	)
+
 	print(len(dataset))
 	dataloader = torch.utils.data.DataLoader(
 	dataset, batch_size=2, drop_last=True, shuffle=False, collate_fn=collate_fn)
