@@ -9,7 +9,7 @@ Key Differences from network.py:
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from trans_pose.stage2.feature_encoding.dense_fusion import DenseFusion
+from trans_pose.stage2.feature_encoding.dense_fusion import DenseFusion, DenseFusion_ResNet
 
 
 class PointSegHeadMulti(nn.Module):
@@ -30,18 +30,36 @@ class PointSegHeadMulti(nn.Module):
         self.num_classes = num_classes
         
         self.mlp = nn.Sequential(
-            nn.Conv1d(in_dim, 256, 1),
+            # nn.Conv1d(in_dim, 256, 1),
+            # nn.BatchNorm1d(256),
+            # nn.ReLU(inplace=True),
+            # nn.Dropout(0.2),
+            
+            # nn.Conv1d(256, 128, 1),
+            # nn.BatchNorm1d(128),
+            # nn.ReLU(inplace=True),
+            # nn.Dropout(0.2),
+            
+            # # MULTI-CLASS: Output num_classes channels
+            # nn.Conv1d(128, num_classes, 1)
+
+            
+            nn.Conv1d(in_dim, 512, 1),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+
+            nn.Conv1d(512, 256, 1),
             nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
-            
+            nn.Dropout(0.3),
+
             nn.Conv1d(256, 128, 1),
             nn.BatchNorm1d(128),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
-            
-            # MULTI-CLASS: Output num_classes channels
+
             nn.Conv1d(128, num_classes, 1)
+        
         )
 
     def forward(self, x):
@@ -71,15 +89,31 @@ class OffsetHead(nn.Module):
         self.num_keypoints = num_keypoints
 
         self.mlp = nn.Sequential(
-            nn.Conv1d(in_dim, 256, 1),
+            # nn.Conv1d(in_dim, 256, 1),
+            # nn.BatchNorm1d(256),
+            # nn.ReLU(inplace=True),
+            # nn.Dropout(0.2),
+            
+            # nn.Conv1d(256, 128, 1),
+            # nn.BatchNorm1d(128),
+            # nn.ReLU(inplace=True),
+            # nn.Dropout(0.2),
+            # nn.Conv1d(128, num_keypoints * 3, 1)
+            
+            nn.Conv1d(in_dim, 512, 1),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+
+            nn.Conv1d(512, 256, 1),
             nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
-            
+            nn.Dropout(0.3),
+
             nn.Conv1d(256, 128, 1),
             nn.BatchNorm1d(128),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
+
             nn.Conv1d(128, num_keypoints * 3, 1)
         )
 
@@ -114,7 +148,7 @@ class TransPoseNetworkMulti(nn.Module):
     def __init__(
         self,
         img_outdim: int = 128,
-        normals_outdim: int = 64,
+        normals_outdim: int = 128,
         points_outdim: int = 256,
         num_keypoints: int = 10,
         num_classes: int = 61,  # 60 objects + background
@@ -122,14 +156,24 @@ class TransPoseNetworkMulti(nn.Module):
     ):
         super().__init__()
         
-        # Feature fusion (uses forward_multi)
-        self.features = DenseFusion(
+        # # Feature fusion (uses forward_multi)
+        # self.features = DenseFusion(
+        #     image_channels=img_outdim,
+        #     normal_channels=normals_outdim,
+        #     pointnet_channels=points_outdim,
+        #     num_samples=4096
+        # )
+        
+        # feature_outdim = img_outdim + normals_outdim + points_outdim
+         # Use ResNet fusion instead of basic CNN
+        self.features = DenseFusion_ResNet(
             image_channels=img_outdim,
             normal_channels=normals_outdim,
             pointnet_channels=points_outdim,
             num_samples=4096
         )
         
+        # Update feature dimension: 128 + 128 + 256 = 512 (instead of 448)
         feature_outdim = img_outdim + normals_outdim + points_outdim
         
         # Multi-class segmentation head

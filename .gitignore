@@ -15,3 +15,9 @@ eval_results/
 
 vis_model1/
 vis_model2/
+trans_pose/stage2/loss_plots
+trans_pose/stage2/loss_plots_model1
+trans_pose/stage2/pose_visualizations/
+trans_pose/stage2/pose_visualizations_model1
+trans_pose/stage2/inference_results/
+trans_pose/stage2/inference_results_model1

@@ -192,70 +192,90 @@ class DenseFusion(nn.Module):
  
 # model = DenseFusion(image_channels=128, normal_channels=64, pointnet_channels=512, num_samples=4096)
 
-class DenseFusion_Res(nn.Module):
+# Replace lines 13-15 with:
+
+from .image_encoder import ImageEncoder, sample_2d_features, ImageEncoder_Res
+from .surface_normal_encoder import NormalEncoder, NormalEncoder_Res
+from .depth_encoder import PointNetBackbone, build_instance_points, build_instance_points_multi
+
+
+# Replace the DenseFusion class (line 18-110) with this ResNet version:
+
+class DenseFusion_ResNet(nn.Module):
+    """
+    Multi-modal feature fusion with ResNet encoders (INSTEAD of basic CNN).
+    
+    Changes from DenseFusion:
+    - Uses ImageEncoder_Res instead of ImageEncoder
+    - Uses NormalEncoder_Res instead of NormalEncoder
+    """
     def __init__(
         self,
         image_channels: int = 128,
-        normal_channels: int = 64,
+        normal_channels: int = 128,  # Changed from 64 to match ResNet
         pointnet_channels: int = 256,
         num_samples: int = 4096,
     ):
-        
         super().__init__()
         self.num_samples = num_samples
-
-        self.image_encoder = ImageEncoder_Res(out_channels= image_channels)
-        self.normal_encoder = NormalEncoder_Res(out_channels= normal_channels)
-        self.point_encoder = PointNetBackbone(out_dim= pointnet_channels)
-
+        
+        # ✅ Use ResNet encoders instead of basic CNN
+        self.image_encoder = ImageEncoder_Res(out_channels=image_channels)
+        self.normal_encoder = NormalEncoder_Res(out_channels=normal_channels)
+        self.point_encoder = PointNetBackbone(out_dim=pointnet_channels)
+        
         self.total_dim = image_channels + normal_channels + pointnet_channels
-
+        
     def forward(
         self,
         rgb: torch.Tensor,
         depth_c: torch.Tensor,
         normals: torch.Tensor,
-        o_mask: torch.Tensor,    # This is the instance mask
+        o_mask: torch.Tensor,
         intrinsics: Tuple[float, float, float, float],
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: 
-        # Handle unbatched input [C, H, W] -> [1, C, H, W]
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Handle unbatched input
         if rgb.dim() == 3:
             rgb = rgb.unsqueeze(0)
             depth_c = depth_c.unsqueeze(0)
             normals = normals.unsqueeze(0)
-            o_mask = o_mask.unsqueeze(0) 
- 
+            o_mask = o_mask.unsqueeze(0)
+
+        # Encode 2D images with ResNet
         feats_rgb = self.image_encoder(rgb)        # [B, 128, H/4, W/4]
-        feats_normal = self.normal_encoder(normals) # [B, 64, H/4, W/4]
+        feats_normal = self.normal_encoder(normals) # [B, 128, H/4, W/4]
 
-        # build point clouds(looping over batch because point sampling is random/variable)
+        # Build point clouds
         points_list = []
-        uv_list = [] 
-        B = rgb.shape[0] # read batch size from input tensor 
+        uv_list = []
+        B = rgb.shape[0]
 
-        for i in range(B): 
+        for i in range(B):
             points_xyz, uv = build_instance_points(
-                depth_c=depth_c[i:i+1], # This is fine
-                mask_inst=o_mask[i:i+1], # Pass the instance mask here
+                depth_c=depth_c[i:i+1],
+                mask_inst=o_mask[i:i+1],
                 intrinsics=intrinsics,
                 num_samples=self.num_samples,
-            )  # points_xyz: [N, 3], uv: [N, 2]
+            )
             points_list.append(points_xyz)
             uv_list.append(uv)
 
-        points_xyz = torch.stack(points_list, dim=0)  
+        points_xyz = torch.stack(points_list, dim=0)
         uv = torch.stack(uv_list, dim=0)
 
+        # Sample 2D features at 3D point projections
         rgb_pts = sample_2d_features(feats_rgb, uv, downsample=4)
         normal_pts = sample_2d_features(feats_normal, uv, downsample=4)
 
+        # Encode 3D geometry
         point_feats, trans_feat = self.point_encoder(points_xyz)
 
+        # Fuse features
         fused_features = torch.cat([
-            point_feats,
-            rgb_pts,
-            normal_pts,
-        ], dim=-1)
+            point_feats,   # [B, N, 256]
+            rgb_pts,       # [B, N, 128]
+            normal_pts,    # [B, N, 128]
+        ], dim=-1)  # [B, N, 512] ← NOTE: Now 512 instead of 448!
 
         return fused_features, points_xyz, trans_feat
     
@@ -267,15 +287,7 @@ class DenseFusion_Res(nn.Module):
         o_mask: torch.Tensor,
         intrinsics: Tuple[float, float, float, float],
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        MULTI-OBJECT VERSION: Returns point labels.
-        
-        Returns:
-            fused_features: [B, N, total_dim]
-            points_xyz: [B, N, 3]
-            trans_feat: [B, 64, 64]
-            point_labels: [B, N] ← NEW!
-        """
+        """MULTI-OBJECT VERSION with ResNet encoders."""
         # Handle unbatched input
         if rgb.dim() == 3:
             rgb = rgb.unsqueeze(0)
@@ -283,18 +295,17 @@ class DenseFusion_Res(nn.Module):
             normals = normals.unsqueeze(0)
             o_mask = o_mask.unsqueeze(0)
 
-        # Encode 2D images
+        # Encode 2D images with ResNet
         feats_rgb = self.image_encoder(rgb)
         feats_normal = self.normal_encoder(normals)
 
         # Build point clouds WITH LABELS
         points_list = []
         uv_list = []
-        labels_list = []  # ← NEW!
+        labels_list = []
         B = rgb.shape[0]
 
         for i in range(B):
-            # Use MULTI version
             points_xyz, uv, point_labels = build_instance_points_multi(
                 depth_c=depth_c[i:i+1],
                 mask_inst=o_mask[i:i+1],
@@ -304,11 +315,11 @@ class DenseFusion_Res(nn.Module):
             
             points_list.append(points_xyz)
             uv_list.append(uv)
-            labels_list.append(point_labels)  # ← NEW!
+            labels_list.append(point_labels)
 
         points_xyz = torch.stack(points_list, dim=0)
         uv = torch.stack(uv_list, dim=0)
-        point_labels = torch.stack(labels_list, dim=0)  # ← NEW!
+        point_labels = torch.stack(labels_list, dim=0)
 
         # Sample 2D features
         rgb_pts = sample_2d_features(feats_rgb, uv, downsample=4)
@@ -322,6 +333,6 @@ class DenseFusion_Res(nn.Module):
             point_feats,
             rgb_pts,
             normal_pts,
-        ], dim=-1)
+        ], dim=-1)  # [B, N, 512]
 
-        return fused_features, points_xyz, trans_feat, point_labels  
+        return fused_features, points_xyz, trans_feat, point_labels

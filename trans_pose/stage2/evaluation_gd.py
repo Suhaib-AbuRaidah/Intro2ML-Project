@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from trans_pose.stage2.dataset_stage2 import Stage2Dataset
 from trans_pose.stage2.network_gd import TransPoseNetworkMulti
-from trans_pose.stage2.inference_gd import load_checkpoint, estimate_pose_kabsch
+from trans_pose.stage2.inference_and_analysis import load_checkpoint, estimate_pose_kabsch
 
 
 def compute_pose_errors(T_gt, T_pred):
@@ -281,7 +281,7 @@ def evaluate_dataset(args):
         target_size=(640, 360),
         use_gt_normals=True
     )
-    print(f"✅ Loaded dataset: {len(ds)} samples, {len(ds.canonical_kpts)} canonical keypoint sets\n")
+    print(f" Loaded dataset: {len(ds)} samples, {len(ds.canonical_kpts)} canonical keypoint sets\n")
     
     # Initialize model
     params = {
@@ -294,7 +294,7 @@ def evaluate_dataset(args):
     model = TransPoseNetworkMulti(**params).to(device)
     model = load_checkpoint(model, args.model, device)
     model.eval()
-    print(f"✅ Model loaded from {args.model}\n")
+    print(f" Model loaded from {args.model}\n")
     
     # Prepare output directory
     os.makedirs(args.outdir, exist_ok=True)
@@ -426,15 +426,15 @@ def evaluate_dataset(args):
     
     # Print summary
     print("\n" + "="*80)
-    print("📊 EVALUATION SUMMARY")
+    print(" EVALUATION SUMMARY")
     print("="*80)
     
-    print(f"\n🔷 Segmentation Metrics:")
+    print(f"\n Segmentation Metrics:")
     print(f"  Overall Accuracy: {np.mean(seg_metrics['overall_acc']):.4f} ± {np.std(seg_metrics['overall_acc']):.4f}")
     print(f"  Samples evaluated: {len(ds)}")
     
     if len(pose_errors['rot']) > 0:
-        print(f"\n🎯 Pose Estimation Errors ({len(pose_errors['rot'])} instances):")
+        print(f"\n Pose Estimation Errors ({len(pose_errors['rot'])} instances):")
         print(f"  Rotation (deg):")
         print(f"    mean={np.mean(pose_errors['rot']):.2f}°")
         print(f"    median={np.median(pose_errors['rot']):.2f}°")
@@ -446,7 +446,7 @@ def evaluate_dataset(args):
         print(f"    std={np.std(pose_errors['trans']):.2f}cm")
         print(f"    min={np.min(pose_errors['trans']):.2f}cm, max={np.max(pose_errors['trans']):.2f}cm")
     else:
-        print(f"\n⚠️  GT poses not found ({gt_poses_found} found)")
+        print(f"\n  GT poses not found ({gt_poses_found} found)")
         print(f"  Expected format: data/scene*/perspective_idx/corrected_pose/{obj_id}.npy")
     
     # Save results
@@ -474,10 +474,10 @@ def evaluate_dataset(args):
     with open(results_file, 'w') as f:
         json.dump(results_dict, f, indent=2)
     
-    print(f"\n✅ Results saved to {results_file}")
+    print(f"\n Results saved to {results_file}")
     
     if args.visualize:
-        print(f"✅ Visualizations saved to {viz_dir}")
+        print(f" Visualizations saved to {viz_dir}")
     
     return sample_results
 
@@ -496,19 +496,19 @@ if __name__ == "__main__":
     
     # --- Safety checks ---
     if not os.path.exists(args.model):
-        print(f"❌ ERROR: Model checkpoint not found: {args.model}")
+        print(f" ERROR: Model checkpoint not found: {args.model}")
         sys.exit(1)
     
     if not os.path.exists(args.data):
-        print(f"❌ ERROR: Data path not found: {args.data}")
+        print(f" ERROR: Data path not found: {args.data}")
         sys.exit(1)
     
     if not os.path.exists(args.kpts):
-        print(f"❌ ERROR: Keypoints path not found: {args.kpts}")
+        print(f" ERROR: Keypoints path not found: {args.kpts}")
         sys.exit(1)
     
     print("="*80)
-    print("🚀 Starting Evaluation")
+    print(" Starting Evaluation")
     print("="*80)
     print(f"Model: {args.model}")
     print(f"Data: {args.data}")

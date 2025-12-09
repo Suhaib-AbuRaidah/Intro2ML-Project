@@ -49,7 +49,7 @@ class NormalEncoder_Res(nn.Module):
     """
     starts with only 16 channels 
     """
-    def __init__(self, out_channels: int = 64):
+    def __init__(self, out_channels: int = 128):
         super().__init__()
         # --1-- downsample by 2 -> H/2 
         self.stem = nn.Sequential(
