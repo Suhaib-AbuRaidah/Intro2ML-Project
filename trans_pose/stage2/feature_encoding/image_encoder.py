@@ -57,42 +57,36 @@ def sample_2d_features(
     original Stage-1 image coordinate frame.
 
     Args:
-        feature_map: `[C, H', W']` or `[B, C, H', W']` tensor from ImageEncoder.
-        uv: `[N, 2]` or `[B, N, 2]` tensor of pixel coordinates (u, v) at the
+        feature_map: `[B, C, H', W']` tensor from ImageEncoder.
+        uv: `[B, N, 2]` tensor of pixel coordinates (u, v) at the
             input resolution.
         downsample: encoder stride to map pixels into feature-map space.
 
     Returns:
-        Sampled descriptors shaped `[N, C]` or `[B, N, C]`.
+        Sampled descriptors shaped `[B, N, C]`.
     """    
-    squeeze_batch = feature_map.dim() == 3
-    if squeeze_batch:
-        feature_map = feature_map.unsqueeze(0)
-    if uv.dim() == 2:
-        uv = uv.unsqueeze(0)
+    B, C, H, W = feature_map.shape
+    _, N, _ = uv.shape
 
-    B, N, _ = uv.shape
-    device = feature_map.device
-    uv = uv.to(device).float() / downsample  # ← ADD .float()
+    # scale UV to feature map 
+    uv_scaled = uv.float() / downsample 
+    u_clamped = torch.clamp(uv_scaled[:, :, 0], 0, W - 1)
+    v_clamped = torch.clamp(uv_scaled[:, :, 1], 0, H - 1)
 
-    h, w = feature_map.shape[-2:]
-    if h < 2 or w < 2:
-        raise ValueError("Feature map too small for sampling.")
+    # normalize to [-1, 1] for grid_sample
+    grid = torch.zeros(B, N, 1, 2, device=feature_map.device)
+    grid[:, :, 0, 0] = 2.0 * u_clamped / (W - 1) - 1.0  # u
+    grid[:, :, 0, 1] = 2.0 * v_clamped / (H - 1) - 1.0  # v
 
-    # Normalize coordinates to [-1, 1] for grid_sample (x = u, y = v)
-    x_norm = (uv[..., 0] / (w - 1)) * 2 - 1
-    y_norm = (uv[..., 1] / (h - 1)) * 2 - 1
-    grid = torch.stack([x_norm, y_norm], dim=-1).view(B, N, 1, 2)
 
+    # sample features: [B, C, H, W] --> grid_sample --> [B, C, N, 1]
     sampled = F.grid_sample(
         feature_map,
         grid,
         mode="bilinear",
-        padding_mode="zeros",  # ← Consider "border" instead
+        padding_mode="zeros",  
         align_corners=True,
     )  # [B, C, N, 1]
-    sampled = sampled.squeeze(-1).permute(0, 2, 1).contiguous()  # [B, N, C]
-
-    if squeeze_batch:
-        sampled = sampled.squeeze(0)
-    return sampled
+    
+    # reshape to [B, N, C]
+    return sampled.squeeze(-1).transpose(1, 2)
