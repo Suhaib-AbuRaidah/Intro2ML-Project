@@ -16,7 +16,7 @@ import datetime
 # Adjust path to point to project root
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from trans_pose.stage2.utilis import votes_from_offsets, mean_shift_clustering, rigid_transform_3D
-from trans_pose.stage2.dataset2_stage2 import Stage2Dataset, collate_fn
+from trans_pose.stage2.dataset_stage2 import Stage2Dataset, collate_fn
 from trans_pose.stage2.network import TransPoseNetwork
 from read_intrinsics import scale_intrinsics
 
@@ -29,8 +29,8 @@ NUM_WORKERS = 16
 
 
 WEIGHT_DECAY = 1e-4
-LR_DECAY_STEP = 10
-LR_DECAY_GAMMA = 0.5
+LR_DECAY_STEP = 15
+LR_DECAY_GAMMA = 0.75
 SAVE_DIR = "checkpoints"
 RESUME = False
 
@@ -234,7 +234,7 @@ def run_epoch(model, dataloader, intrinsics_tuple_scaled, device,
 if __name__ == "__main__":
 
 
-    torch.seed(42)
+    torch.manual_seed(0)
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     print(f"Using device: {device}")
 

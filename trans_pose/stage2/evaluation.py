@@ -14,7 +14,7 @@ from trans_pose.stage2.utilis import rigid_transform_3D
 from sklearn.metrics import accuracy_score
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-CHECKPOINT = "checkpoints1/best_model.pth"
+CHECKPOINT = "checkpoints/best_model.pth"
 BATCH_SIZE = 8
 NUM_WORKERS = 4
 

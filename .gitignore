@@ -21,3 +21,5 @@ runs/
 .DS_Store
 .vscode/
 .idea/
+**/*.png
+**/*.docx

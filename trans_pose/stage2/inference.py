@@ -12,7 +12,7 @@ from trans_pose.stage2.network import TransPoseNetwork
 from trans_pose.stage2.utilis import rigid_transform_3D
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-CHECKPOINT = "checkpoints1/best_model.pth"
+CHECKPOINT = "checkpoints/best_model.pth"
 
 
 def to_numpy_img(tensor):
@@ -274,7 +274,7 @@ def plot_scene_matplotlib(points_np, seg, pred_pose_dict,gt_pose_dict,
     # ---------------------------------
     # SAVE AS SVG
     # ---------------------------------
-    plt.savefig(out_path, format='svg', dpi=600)
+    plt.savefig(out_path, format='png', dpi=300)
     plt.close(fig)
     print(f"Saved SVG to {out_path}")
 
@@ -366,7 +366,7 @@ def run_inference(index=0, show_all=True):
         if sample_poses is not None and key in sample_poses:
             print("Target/GT pose for object:\n", sample_poses[key])
 
-    plot_scene_matplotlib(points_np, seg, pred_poses,sample.get("poses", None),rgb_img, depth_color, sn, out_path="inference_scene.svg")
+    plot_scene_matplotlib(points_np, seg, pred_poses,sample.get("poses", None),rgb_img, depth_color, sn, out_path="inference_scene.png")
     print("Saved scene plot to inference_scene.svg")
     # visualize everything
     if show_all:

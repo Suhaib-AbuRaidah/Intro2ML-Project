@@ -4,11 +4,13 @@ from scipy.ndimage import gaussian_filter1d
 from matplotlib.ticker import MaxNLocator
 
 # Load data
-df = pd.read_csv("./csvdata/run-.-tag-Loss_train.csv")
-df2 = pd.read_csv("./csvdata/run-.-tag-Loss_val_loss.csv")
+df = pd.read_csv("./csvdata/run-.-tag-Loss_train1.csv")
+df2 = pd.read_csv("./csvdata/run-.-tag-Loss_val_loss1.csv")
 # df3 = pd.read_csv("./csvdata/run-.-tag-Loss_val_seg_loss.csv")
 # df4 = pd.read_csv("./csvdata/run-.-tag-Loss_val_offset_loss.csv")
-
+df = df.iloc[:33]  # Remove first row
+df2 = df2.iloc[:33]  # Remove first row
+print(df2.head(40))
 # Smooth
 df["Smoothed"] = gaussian_filter1d(df["Value"], sigma=1)
 df2["Smoothed"] = gaussian_filter1d(df2["Value"], sigma=1)
@@ -31,7 +33,7 @@ plt.plot(df2["Step"], df2["Smoothed"], linestyle='-', color="blue", label='Total
 # Labels
 plt.xlabel("Epoch", fontsize=20)
 plt.ylabel("Loss Value", fontsize=20)
-plt.title("Total Training and Validation Loss over Epochs", fontsize=26)
+plt.title("Total Training and Validation Loss over Epochs (Larger Network)", fontsize=22)
 
 # Force integer ticks and start from 1
 ax = plt.gca()

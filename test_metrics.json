@@ -1,9 +1,9 @@
 {
-    "segmentation_accuracy": 0.9745468525502874,
-    "offset_mae": 0.08846510946750641,
-    "mean_keypoint_error": 0.11114950230991139,
-    "mean_rotation_error_deg": 14.300826281144957,
-    "mean_translation_error": 0.028585797319608995,
+    "segmentation_accuracy": 0.9807718211206896,
+    "offset_mae": 0.059128642082214355,
+    "mean_keypoint_error": 0.0768436358084399,
+    "mean_rotation_error_deg": 11.784413418621043,
+    "mean_translation_error": 0.023190291763334578,
     "num_obj": 6744,
-    "count_rot_err_less_than_10": 2800
+    "count_rot_err_less_than_10": 3779
 }
