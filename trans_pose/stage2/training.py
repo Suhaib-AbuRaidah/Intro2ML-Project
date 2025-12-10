@@ -6,43 +6,42 @@ from torchvision import transforms as T
 import sys
 import os
 import glob
+import numpy as np
+from torch.utils.tensorboard import SummaryWriter
+import open3d as o3d
+import cv2
+from torch.utils.data import random_split
+import datetime
 
 # Adjust path to point to project root
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
+from trans_pose.stage2.utilis import votes_from_offsets, mean_shift_clustering, rigid_transform_3D
 from trans_pose.stage2.dataset_stage2 import Stage2Dataset, collate_fn
 from trans_pose.stage2.network import TransPoseNetwork
 from read_intrinsics import scale_intrinsics
 
 # --- CONFIGURATION ---
-BATCH_SIZE = 8
+BATCH_SIZE = 16
 LEARNING_RATE = 1e-3
 EPOCHS = 20
-NUM_WORKERS = 0
+NUM_WORKERS = 16
 
-# Define target output size for images
-TARGET_H = 360
-TARGET_W = 640
 
-# --- CRITICAL: YOU MUST SET THESE TO YOUR ACTUAL IMAGE RESOLUTION ---
-ORIGINAL_H = 720  # Example: If your images are 720p (1280x720)
-ORIGINAL_W = 1280 # Example: If your images are 720p (1280x720)
-# ------------------------------------------------------------------
 
 WEIGHT_DECAY = 1e-4
-LR_DECAY_STEP = 10
-LR_DECAY_GAMMA = 0.5
+LR_DECAY_STEP = 15
+LR_DECAY_GAMMA = 0.75
 SAVE_DIR = "checkpoints"
-RESUME = True
-# ---------------------
+RESUME = False
 
-def feature_transform_regularizer(trans):
-    d = trans.size()[1]
-    I = torch.eye(d, device=trans.device)[None, :, :]
-    loss = torch.mean(torch.norm(torch.bmm(trans, trans.transpose(2, 1)) - I, dim=(1, 2)))
-    return loss
+# ---------------- loss weights ----------------
+W_POSE     = 1.0
+W_SEG      = 0.5
+W_OFFSETS  = 0.25
 
-def run_epoch(model, dataloader, intrinsics_tuple_scaled, device, optimizer=None, is_train=True, epoch_idx=0):
+def run_epoch(model, dataloader, intrinsics_tuple_scaled, device, 
+              optimizer=None, is_train=True, epoch_idx=0):
+
     if is_train:
         model.train()
         desc = f"Train Ep {epoch_idx+1}"
@@ -51,133 +50,207 @@ def run_epoch(model, dataloader, intrinsics_tuple_scaled, device, optimizer=None
         desc = f"Valid Ep {epoch_idx+1}"
 
     total_loss = 0.0
-    total_seg = 0.0
-    total_off = 0.0
-    
+    pose_loss = 0.0
+    seg_loss = 0.0
+    offset_loss = 0.0
+
     pbar = tqdm.tqdm(dataloader, desc=desc, leave=True, dynamic_ncols=True)
-    
+
     for step, data in enumerate(pbar):
-        rgb = data['rgb'].to(device)
-        sn = data['sn'].to(device)
+
+        rgb   = data['rgb'].to(device)
+        sn    = data['sn'].to(device)
         depth = data['depth'].to(device)
         o_mask = data['mask'].to(device)
-        kpts_list = data['keypoints']
-        
-        # --- REMOVED MANUAL TENSOR DOWNSAMPLING ---
-        
-        with torch.set_grad_enabled(is_train):
-            # Pass the scaled intrinsics tuple to the model
-            seg_logits, offsets, points, trans_feat = model(rgb, sn, depth, o_mask, intrinsics_tuple_scaled)
-            
-            # --- TARGET GENERATION ---
-            B, N, _ = points.shape
-            
-            # Use the scaled intrinsics for 3D-to-2D projection
-            fx, fy, cx, cy = intrinsics_tuple_scaled
-            
-            x, y, z = points[:, :, 0], points[:, :, 1], points[:, :, 2]
-            z = torch.clamp(z, min=1e-8)
-            
-            # 3D-to-2D Projection using SCALED intrinsics
-            u = (x * fx / z) + cx
-            v = (y * fy / z) + cy
-            
-            # Use the fixed, scaled dimensions for H and W
-            H, W = TARGET_H, TARGET_W 
-            
-            grid = torch.zeros(B, N, 1, 2, device=device)
-            grid[:, :, 0, 0] = 2.0 * u / (W - 1) - 1.0
-            grid[:, :, 0, 1] = 2.0 * v / (H - 1) - 1.0
-            
-            # The sampled mask is now at the TARGET_H/W resolution
-            sampled_mask = F.grid_sample(o_mask.float(), grid, mode='nearest', align_corners=True)
-            point_obj_ids = sampled_mask.squeeze(-1).squeeze(1).long()
-            
-            gt_seg = torch.zeros((B, N), dtype=torch.long, device=device)
-            target_offsets = torch.zeros((B, N, model.offset_head.num_keypoints, 3), device=device)
-            offset_mask = torch.zeros((B, N), dtype=torch.bool, device=device)
-            
-            for b in range(B):
-                available_objs = kpts_list[b]
-                for obj_id_str, kpts in available_objs.items():
-                    obj_id = int(obj_id_str)
-                    mask_b = (point_obj_ids[b] == obj_id)
-                    if mask_b.sum() == 0: continue
-                    
-                    # MAPPING: Adjust if your IDs differ (e.g. 1->0)
-                    class_idx = obj_id - 1 
-                    
-                    if class_idx >= 0 and class_idx < model.seg_head.mlp[-1].out_features:
-                        gt_seg[b, mask_b] = class_idx
-                        offset_mask[b, mask_b] = True
-                        kpts_tensor = torch.tensor(kpts, device=device).float()
-                        current_points = points[b, mask_b].unsqueeze(1)
-                        target_offsets[b, mask_b] = kpts_tensor.unsqueeze(0) - current_points
 
-            # --- LOSSES ---
-            # Use .reshape() instead of .view() to handle non-contiguous tensors from permute()
-            loss_seg = F.cross_entropy(seg_logits.reshape(-1, seg_logits.shape[-1]), gt_seg.view(-1))
-            
-            if offset_mask.sum() > 0:
-                loss_off = F.l1_loss(offsets[offset_mask], target_offsets[offset_mask])
-            else:
-                loss_off = torch.tensor(0.0, device=device)
-                
-            loss_reg = feature_transform_regularizer(trans_feat)
-            
-            loss_total = loss_seg + loss_off + 0.001 * loss_reg
-            if step == 0:
-                # --- Check Bounding Box of Projected Points ---
-                print(f"U range: [{u.min().item():.2f}, {u.max().item():.2f}] (W={W})")
-                print(f"V range: [{v.min().item():.2f}, {v.max().item():.2f}] (H={H})")
-                print(f"Z mean: {z.mean().item():.4f}")
-                
-                # Check what percentage of points are on screen (within image bounds)
-                valid_u = torch.logical_and(u >= 0, u < W)
-                valid_v = torch.logical_and(v >= 0, v < H)
-                valid_points = torch.logical_and(valid_u, valid_v).sum().item()
-                print(f"Valid projected points (on screen): {valid_points}/{B*N}")
-                            
+        poses_list        = data['poses']
+        zero_kpts_list    = data['zero_keypoints']
+        target_kpts_list  = data['target_keypoints']   # REQUIRED for Fix #2
+
+        with torch.set_grad_enabled(is_train):
+
+            seg_logits, offsets, points, trans_feat = model(
+                rgb, sn, depth, o_mask, intrinsics_tuple_scaled)
+
+            B, N, K, _ = votes_from_offsets(points, offsets).shape
+            seg_labels = seg_logits.argmax(dim=-1)
+            votes = votes_from_offsets(points, offsets)
+
+            loss_total = 0.0
+            loss_pose_batch    = 0.0
+            loss_seg_batch     = 0.0
+            loss_offsets_batch = 0.0
+
+            # ---------------------------------------------------------
+            # Process each sample independently
+            # ---------------------------------------------------------
+            for b in range(B):
+
+                poses_gt       = poses_list[b]
+                zero_kp_dict   = zero_kpts_list[b]
+                target_kp_dict = target_kpts_list[b]
+
+                object_ids = sorted([int(obj_id) for obj_id in poses_gt.keys()])
+                O = len(object_ids)
+
+                # Local class IDs: real_id → 0..O-1
+                class_map = {real_id: idx for idx, real_id in enumerate(object_ids)}
+
+                seg_b   = seg_labels[b]     # (N,)
+                votes_b = votes[b]          # (N,K,3)
+                pts_b   = points[b]         # (N,3)
+
+                # ---------------------- FIX #2 ----------------------
+                # Create seg_gt by assigning each point to the nearest object's keypoints
+                seg_gt = torch.zeros(N, dtype=torch.long, device=device)
+                offsets_gt = torch.zeros_like(offsets[b])  # (N,K,3)
+
+                # Collect keypoints of all objects into one tensor (O,K,3)
+                all_kpts = []
+                for real_obj in object_ids:
+                    k = torch.tensor(target_kp_dict[str(real_obj)], device=device).float()  # (K,3)
+                    all_kpts.append(k)
+                all_kpts = torch.stack(all_kpts, dim=0)   # (O,K,3)
+
+                # pts_b : (N, 3)
+                # all_kpts : (O, K, 3)
+
+                N = pts_b.shape[0]
+                O, K, _ = all_kpts.shape
+
+                all_kpts_flat = all_kpts.reshape(O*K, 3)     # (O*K, 3)
+
+                # Pairwise distances
+                d_flat = torch.cdist(pts_b, all_kpts_flat)   # (N, O*K)
+
+                # Reshape back
+                dists = d_flat.reshape(N, O, K)              # (N, O, K)
+
+                # For each point, reduce distances to (N,O) by min over keypoints
+                d_obj = dists.min(dim=2).values  # (N,O)
+
+                # Finally assign the nearest object for each point
+                seg_gt = d_obj.argmin(dim=1)     # (N,), integer class id ∈ [0, O-1]
+                # pcd = o3d.geometry.PointCloud()
+                # pcd.points = o3d.utility.Vector3dVector(pts_b.cpu().numpy())
+                # pcd.paint_uniform_color([1, 0, 0])
+                # o3d.visualization.draw_geometries([pcd])
+
+                # ---------------------- offsets supervision ----------------------
+                # For each point → offsets to all K keypoints of its assigned object
+                for real_obj in object_ids:
+                    cls = class_map[real_obj]
+
+                    obj_mask = (seg_gt == cls)
+
+                    # pcd_ob = o3d.geometry.PointCloud()
+                    # pcd_ob.points = o3d.utility.Vector3dVector(pts_b[obj_mask].cpu().numpy())
+                    # pcd_ob.paint_uniform_color([0, 1, 0])
+                    # o3d.visualization.draw_geometries([pcd_ob])
+
+                    if obj_mask.sum() == 0:
+                        continue
+
+                    kpts = torch.tensor(target_kp_dict[str(real_obj)],
+                                        device=device).float()  # (K,3)
+
+                    pts_obj = pts_b[obj_mask]       # (M,3)
+                    # broadcast: pts → (M,1,3), kpts → (1,K,3)
+                    offsets_gt[obj_mask] = kpts.unsqueeze(0) - pts_obj.unsqueeze(1)
+
+                # ---------------- segmentation loss ----------------
+                loss_seg = F.cross_entropy(seg_logits[b], seg_gt)
+
+                # ---------------- offset regression loss ----------------
+                loss_offset = F.l1_loss(offsets[b], offsets_gt)
+
+                # ---------------- pose loss ----------------
+                loss_pose = 0.0
+                centers_b = torch.zeros((O, K, 3), device=device)
+
+                # mean-shift clustering per object
+                for real_obj in object_ids:
+                    cls = class_map[real_obj]
+                    mask = (seg_b == cls)
+                    votes_obj = votes_b[mask]
+
+                    if votes_obj.shape[0] == 0:
+                        centers_b[cls] = votes_b.mean(dim=0)
+                    else:
+                        inp = votes_obj.unsqueeze(0)
+                        ctr = mean_shift_clustering(inp, None, 0.05, 15)
+                        centers_b[cls] = ctr[0]
+
+                # pose loss over objects
+                for real_obj in object_ids:
+                    local_idx = class_map[real_obj]
+
+                    pred_kp = centers_b[local_idx]   # (K,3)
+                    zero_kp = torch.tensor(zero_kp_dict[str(real_obj)],
+                                           device=device).float()  # (K,3)
+
+                    pred_pose = rigid_transform_3D(zero_kp, pred_kp)
+
+                    target_pose = torch.tensor(
+                        poses_gt[str(real_obj)], device=device).float()  # (4,4)
+
+                    loss_pose += F.mse_loss(pred_pose, target_pose)
+
+                loss_pose_batch    += loss_pose
+                loss_seg_batch     += loss_seg
+                loss_offsets_batch += loss_offset
+
+            # Average across batch
+            loss_pose_batch    /= B
+            loss_seg_batch     /= B
+            loss_offsets_batch /= B
+
+            # Final weighted loss
+            loss_total = (W_POSE * loss_pose_batch +
+                          W_SEG  * loss_seg_batch +
+                          W_OFFSETS * loss_offsets_batch)
+
             if is_train:
                 optimizer.zero_grad()
                 loss_total.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
                 optimizer.step()
-        
-        # Update stats
+
+        pose_loss += loss_pose_batch.item()
+        seg_loss += loss_seg_batch.item()
+        offset_loss += loss_offsets_batch.item()
         total_loss += loss_total.item()
-        total_seg += loss_seg.item()
-        total_off += loss_off.item()
-        
-        # Real-time print in progress bar
+
         pbar.set_postfix({
-            "Loss": f"{loss_total.item():.4f}", 
-            "Seg": f"{loss_seg.item():.4f}", 
-            "Off": f"{loss_off.item():.4f}"
+            "Loss": f"{loss_total.item():.4f}",
+            "Seg": f"{loss_seg_batch.item():.4f}",
+            "Off": f"{loss_offsets_batch.item():.4f}",
+            "Pose": f"{loss_pose_batch.item():.4f}",
         })
 
-    return total_loss / len(dataloader)
+    return total_loss / len(dataloader), pose_loss / len(dataloader), seg_loss / len(dataloader), offset_loss / len(dataloader)
+
 
 if __name__ == "__main__":
+
+
+    torch.manual_seed(0)
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     print(f"Using device: {device}")
 
-    # 1. DATASETS
-    keypoints_dir ="F:/ML-Dataset/keypoints"
-    train_dir = "F:/ML-Dataset/train" 
-    valid_dir = "F:/ML-Dataset/valid"
-
-    data_transforms = T.ToTensor() 
-
-    train_dataset = Stage2Dataset(
-        root_dir=train_dir,
-        keypoints_dir=keypoints_dir,
-        transforms=data_transforms,
-        # --- PASS TARGET SIZE TO DATASET ---
-        target_size=(TARGET_W, TARGET_H)
-    )
+    start_training_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    writer = SummaryWriter(f'runs/{start_training_time}')
+    print(f"TensorBoard logs will be saved to: './runs/{start_training_time}'")
+    dataset = Stage2Dataset(
+        root_dir="/home/suhaib/ML_Project/data/transcg-data-1/transcg",transforms=T.ToTensor())
+    train_dataloader = torch.utils.data.DataLoader(
+        dataset, batch_size=8, drop_last=True, shuffle=True, collate_fn=collate_fn)
     
-    original_intrinsics_matrix = train_dataset.camera_intrisics
+    train_size = int(0.8 * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, valid_dataset = random_split(dataset, [train_size, val_size])
+
+    original_intrinsics_matrix = dataset.camera_intrisics
     
     # Extract fx, fy, cx, cy from the original intrinsics matrix
     original_fx = original_intrinsics_matrix[0,0]
@@ -185,16 +258,7 @@ if __name__ == "__main__":
     original_cx = original_intrinsics_matrix[0,2]
     original_cy = original_intrinsics_matrix[1,2]
 
-    if not os.path.exists(valid_dir):
-        valid_dataset = train_dataset
-    else:
-        valid_dataset = Stage2Dataset(
-            root_dir=valid_dir, 
-            keypoints_dir=keypoints_dir, 
-            transforms=data_transforms,
-            # --- PASS TARGET SIZE TO DATASET ---
-            target_size=(TARGET_W, TARGET_H) 
-        )
+
 
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True, 
@@ -205,21 +269,18 @@ if __name__ == "__main__":
         collate_fn=collate_fn, num_workers=NUM_WORKERS, drop_last=False
     )
 
-    # The intrinsics loaded from Stage2Dataset are already scaled to TARGET_W, TARGET_H (640x360).
-    # Therefore, we use them directly without further scaling.
-    # If Stage2Dataset were to provide ORIGINAL (1280x720) intrinsics,
-    # then the scale_intrinsics function would be correctly applied here.
     intrinsics_tuple_scaled = (original_fx, original_fy, original_cx, original_cy)
  
     # 2. MODEL
     params = {
          "img_outdim": 128,
-         "normals_outdim": 64, 
+         "normals_outdim": 128, 
          "points_outdim": 256,
          "num_classes": 4,     
          "num_keypoints": 10   
     }
-    model = TransPoseNetwork(**params).to(device)
+    model = TransPoseNetwork(**params).float().to(device)
+
 
     # 3. OPTIMIZER & SCHEDULER
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
@@ -241,19 +302,41 @@ if __name__ == "__main__":
         print(f"Resumed at Epoch {start_epoch}")
 
     # 5. TRAINING LOOP
-    for epoch in range(start_epoch, EPOCHS):
+    patience = 5
+    no_improve = 0
+    epoch = start_epoch
+
+    while True:
         current_lr = scheduler.get_last_lr()[0]
-        print(f"\n=== Epoch {epoch+1}/{EPOCHS} | LR: {current_lr:.6f} ===")
-        
-        # Pass the scaled intrinsics tuple
-        train_loss = run_epoch(model, train_loader, intrinsics_tuple_scaled, device, optimizer, is_train=True, epoch_idx=epoch)
-        val_loss = run_epoch(model, valid_loader, intrinsics_tuple_scaled, device, is_train=False, epoch_idx=epoch)
-        
+        print(f"\n=== Epoch {epoch+1} | LR: {current_lr:.6f} ===")
+
+        train_loss, pose_loss, seg_loss, offset_loss = run_epoch(
+            model, train_loader, intrinsics_tuple_scaled, device,
+            optimizer, is_train=True, epoch_idx=epoch
+        )
+
+        val_loss, val_pose_loss, val_seg_loss, val_offset_loss = run_epoch(
+            model, valid_loader, intrinsics_tuple_scaled, device,
+            is_train=False, epoch_idx=epoch
+        )
+
+        writer.add_scalar('Loss/train', train_loss, epoch)
+        writer.add_scalar('Loss/pose_loss', pose_loss, epoch)
+        writer.add_scalar('Loss/seg_loss', seg_loss, epoch)
+        writer.add_scalar('Loss/offset_loss', offset_loss, epoch)
+        writer.add_scalar('Loss/val_loss', val_loss, epoch)
+        writer.add_scalar('Loss/val_pose_loss', val_pose_loss, epoch)
+        writer.add_scalar('Loss/val_seg_loss', val_seg_loss, epoch)
+        writer.add_scalar('Loss/val_offset_loss', val_offset_loss, epoch)
+
         scheduler.step()
-        
-        print(f"Summary Ep {epoch+1}: Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
-        
-        # Checkpoint Dictionary
+
+        print(f"Summary Ep {epoch+1}:\n"
+            f"Train Loss: {train_loss:.4f} | Pose: {pose_loss:.4f} | "
+            f"Seg: {seg_loss:.4f} | Offset: {offset_loss:.4f}\n"
+            f"Val Loss: {val_loss:.4f}")
+
+        # Save latest
         checkpoint = {
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
@@ -261,16 +344,21 @@ if __name__ == "__main__":
             'best_val_loss': best_val_loss,
             'loss': train_loss
         }
-        
-        # Save Latest (Overwrites)
         torch.save(checkpoint, latest_ckpt)
-        
-        # Save Per-Epoch (Cache History)
-        epoch_ckpt = os.path.join(SAVE_DIR, f"model_epoch_{epoch+1}.pth")
-        torch.save(checkpoint, epoch_ckpt)
-        
-        # Save Best
+
+        # Best model logic
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(checkpoint, os.path.join(SAVE_DIR, "best_model.pth"))
             print(f">>> New Best Model! (Val Loss: {val_loss:.4f})")
+            no_improve = 0
+        else:
+            no_improve += 1
+            print(f"No improvement for {no_improve}/{patience} epochs")
+
+        # Stop criterion
+        if no_improve >= patience:
+            print(f"Stopping because no improvement for {patience} epochs.")
+            break
+
+        epoch += 1

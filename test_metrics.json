@@ -1,0 +1,9 @@
+{
+    "segmentation_accuracy": 0.9807718211206896,
+    "offset_mae": 0.059128642082214355,
+    "mean_keypoint_error": 0.0768436358084399,
+    "mean_rotation_error_deg": 11.784413418621043,
+    "mean_translation_error": 0.023190291763334578,
+    "num_obj": 6744,
+    "count_rot_err_less_than_10": 3779
+}
